@@ -1,0 +1,164 @@
+// BridgeAPI Gateway — Database Schema
+// All tables created on day 1. Phase 2 tables (execution_rules, escalations) are empty.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PHASE 1: Active tables
+// ═══════════════════════════════════════════════════════════════
+
+model Client {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  plan      String   @default("free") // free | starter | pro | enterprise
+  apiKeys   ApiKey[]
+  config    Json     @default("{}") // JSONB — Phase 2: extends with autonomy rules, thresholds
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  connectors     Connector[]
+  toolCalls      ToolCall[]
+  webhookEvents  WebhookEvent[]
+  executionRules ExecutionRule[]
+  escalations    Escalation[]
+  dailyMetrics   DailyMetric[]
+
+  @@map("clients")
+}
+
+model ApiKey {
+  id        String   @id @default(uuid())
+  clientId  String   @map("client_id")
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  key       String   @unique
+  name      String   @default("Default")
+  active    Boolean  @default(true)
+  lastUsed  DateTime? @map("last_used")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("api_keys")
+}
+
+model Connector {
+  id          String   @id @default(uuid())
+  clientId    String   @map("client_id")
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  type        String   // whatsapp | hotmart | eduzz | pix | nfe | guru | hubbla
+  credentials Json     @default("{}") // Encrypted JSONB — API keys, tokens
+  status      String   @default("active") // active | inactive | error
+  config      Json     @default("{}") // Connector-specific config
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  toolCalls      ToolCall[]
+  executionRules ExecutionRule[]
+  dailyMetrics   DailyMetric[]
+
+  @@map("connectors")
+}
+
+model ToolCall {
+  id          String   @id @default(uuid())
+  clientId    String   @map("client_id")
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  connectorId String   @map("connector_id")
+  connector   Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  toolName    String   @map("tool_name")
+  params      Json     @default("{}") // Input parameters
+  response    Json     @default("{}") // Full response
+  statusCode  Int?     @map("status_code")
+  latencyMs   Int?     @map("latency_ms")
+  error       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  escalation Escalation?
+
+  @@index([clientId, createdAt])
+  @@index([connectorId, toolName])
+  @@index([createdAt])
+  @@map("tool_calls")
+}
+
+model WebhookEvent {
+  id          String   @id @default(uuid())
+  clientId    String   @map("client_id")
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  source      String   // error | escalation | alert
+  payload     Json     @default("{}")
+  status      String   @default("queued") // queued | delivered | failed | dlq
+  attempts    Int      @default(0)
+  nextRetryAt DateTime? @map("next_retry_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([clientId, status])
+  @@index([status, nextRetryAt])
+  @@map("webhook_events")
+}
+
+model DailyMetric {
+  id           String   @id @default(uuid())
+  clientId     String   @map("client_id")
+  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  connectorId  String   @map("connector_id")
+  connector    Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  date         DateTime @db.Date
+  totalCalls   Int      @default(0) @map("total_calls")
+  successCalls Int      @default(0) @map("success_calls")
+  errorCalls   Int      @default(0) @map("error_calls")
+  avgLatency   Float?   @map("avg_latency")
+  p95Latency   Float?   @map("p95_latency")
+
+  @@unique([clientId, connectorId, date])
+  @@index([clientId, date])
+  @@map("daily_metrics")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PHASE 2: Created empty, activated later
+// ═══════════════════════════════════════════════════════════════
+
+model ExecutionRule {
+  id          String   @id @default(uuid())
+  clientId    String   @map("client_id")
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  connectorId String?  @map("connector_id") // null = applies to all connectors
+  connector   Connector? @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  toolName    String?  @map("tool_name") // null = applies to all tools
+  ruleType    String   @map("rule_type") // threshold | pattern | blocklist
+  config      Json     @default("{}") // Rule-specific configuration
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([clientId, active])
+  @@map("execution_rules")
+}
+
+model Escalation {
+  id             String    @id @default(uuid())
+  clientId       String    @map("client_id")
+  client         Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  toolCallId     String    @unique @map("tool_call_id")
+  toolCall       ToolCall  @relation(fields: [toolCallId], references: [id], onDelete: Cascade)
+  reason         String
+  context        Json      @default("{}")
+  status         String    @default("pending") // pending | resolved | expired
+  resolvedBy     String?   @map("resolved_by")
+  resolvedAction String?   @map("resolved_action") // allow | deny
+  createdAt      DateTime  @default(now()) @map("created_at")
+  resolvedAt     DateTime? @map("resolved_at")
+
+  @@index([clientId, status])
+  @@index([status, createdAt])
+  @@map("escalations")
+}

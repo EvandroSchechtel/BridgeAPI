@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "instagram-direct": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-instagram-direct"],
+      "env": {}
+    }
+  }
+}

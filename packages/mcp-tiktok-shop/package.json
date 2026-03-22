@@ -1,0 +1,44 @@
+{
+  "name": "@bridgeapi/mcp-tiktok-shop",
+  "version": "0.1.0",
+  "description": "MCP Server for TikTok Shop API — connect any AI Agent to TikTok Shop",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "bridgeapi-tiktok-shop": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "inspect": "npx @modelcontextprotocol/inspector node dist/index.js",
+    "deploy:copy": "mkdir -p /tmp/mcp-tiktok-shop/src && cp src/tiktok-shop-client.ts /tmp/mcp-tiktok-shop/src/ && cp src/index.ts /tmp/mcp-tiktok-shop/src/ && cp package.json /tmp/mcp-tiktok-shop/ && cp tsconfig.json /tmp/mcp-tiktok-shop/ && cp .gitignore /tmp/mcp-tiktok-shop/ && cp .env.example /tmp/mcp-tiktok-shop/ && cp claude_desktop_config.example.json /tmp/mcp-tiktok-shop/ && cp LICENSE /tmp/mcp-tiktok-shop/ && cp README.md /tmp/mcp-tiktok-shop/ && echo 'Files copied to /tmp/mcp-tiktok-shop/'",
+    "deploy:build": "cd /tmp/mcp-tiktok-shop && npx tsc",
+    "deploy:git": "cd /tmp/mcp-tiktok-shop && git add -A && git status"
+  },
+  "keywords": [
+    "mcp",
+    "tiktok-shop",
+    "ecommerce",
+    "ai-agents",
+    "bridgeapi",
+    "model-context-protocol"
+  ],
+  "author": "BridgeAPI <contato@bridgeapi.com.br>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EvandroSchechtel/mcp-tiktok-shop"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.9.3"
+  }
+}

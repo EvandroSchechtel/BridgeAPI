@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "tiktok": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-tiktok"],
+      "env": {}
+    }
+  }
+}

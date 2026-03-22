@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "temu": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-temu"],
+      "env": {}
+    }
+  }
+}

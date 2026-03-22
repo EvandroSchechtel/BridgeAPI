@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-whatsapp"],
+      "env": {
+        "WHATSAPP_ACCESS_TOKEN": "YOUR_TOKEN_HERE",
+        "WHATSAPP_PHONE_NUMBER_ID": "YOUR_PHONE_NUMBER_ID",
+        "WHATSAPP_BUSINESS_ACCOUNT_ID": "YOUR_WABA_ID"
+      }
+    }
+  }
+}

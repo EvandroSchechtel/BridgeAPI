@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "loja-integrada": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-loja-integrada"],
+      "env": {}
+    }
+  }
+}

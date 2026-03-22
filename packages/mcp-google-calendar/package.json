@@ -1,0 +1,40 @@
+{
+  "name": "@bridgeapi/mcp-google-calendar",
+  "version": "0.1.0",
+  "description": "MCP Server for Google Calendar API — connect any AI Agent to Google Calendar",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "bridgeapi-google-calendar": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "inspect": "npx @modelcontextprotocol/inspector node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-google-calendar",
+    "ai-agents",
+    "bridgeapi",
+    "model-context-protocol"
+  ],
+  "author": "BridgeAPI <contato@bridgeapi.com.br>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EvandroSchechtel/mcp-google-calendar"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.9.3"
+  }
+}

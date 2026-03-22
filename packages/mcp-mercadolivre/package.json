@@ -1,0 +1,43 @@
+{
+  "name": "@bridgeapi/mcp-mercadolivre",
+  "version": "0.1.0",
+  "description": "MCP Server for Mercado Livre API — connect any AI Agent to Mercado Livre",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "bridgeapi-mercadolivre": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "inspect": "npx @modelcontextprotocol/inspector node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "mercadolivre",
+    "mercado-livre",
+    "ai-agents",
+    "bridgeapi",
+    "model-context-protocol",
+    "marketplace",
+    "brasil"
+  ],
+  "author": "BridgeAPI <contato@bridgeapi.com.br>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EvandroSchechtel/mcp-mercadolivre"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.9.3"
+  }
+}

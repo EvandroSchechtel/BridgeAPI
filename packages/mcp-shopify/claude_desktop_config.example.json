@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "shopify": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-shopify"],
+      "env": {}
+    }
+  }
+}

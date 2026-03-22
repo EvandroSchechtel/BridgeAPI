@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "hotmart": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-hotmart"],
+      "env": {
+        "HOTMART_CLIENT_ID": "YOUR_CLIENT_ID_HERE",
+        "HOTMART_CLIENT_SECRET": "YOUR_CLIENT_SECRET_HERE",
+        "HOTMART_BASIC_TOKEN": "YOUR_BASIC_TOKEN_HERE"
+      }
+    }
+  }
+}

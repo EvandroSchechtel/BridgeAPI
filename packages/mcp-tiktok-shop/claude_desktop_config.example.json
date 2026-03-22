@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "tiktok-shop": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-tiktok-shop"],
+      "env": {
+        "TIKTOK_SHOP_APP_KEY": "YOUR_APP_KEY_HERE",
+        "TIKTOK_SHOP_APP_SECRET": "YOUR_APP_SECRET_HERE",
+        "TIKTOK_SHOP_ACCESS_TOKEN": "YOUR_ACCESS_TOKEN_HERE",
+        "TIKTOK_SHOP_SHOP_ID": "YOUR_SHOP_ID_HERE"
+      }
+    }
+  }
+}

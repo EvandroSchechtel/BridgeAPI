@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "shopee": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-shopee"],
+      "env": {}
+    }
+  }
+}

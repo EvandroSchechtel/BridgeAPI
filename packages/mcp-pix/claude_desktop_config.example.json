@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pix": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-pix"],
+      "env": {}
+    }
+  }
+}

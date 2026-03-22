@@ -1,0 +1,42 @@
+{
+  "name": "@bridgeapi/gateway",
+  "version": "0.1.0",
+  "description": "BridgeAPI Gateway — API gateway with middleware pipeline for MCP connectors",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "db:migrate": "npx prisma migrate dev",
+    "db:push": "npx prisma db push",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "npx prisma studio"
+  },
+  "keywords": [
+    "bridgeapi",
+    "gateway",
+    "mcp",
+    "middleware",
+    "api"
+  ],
+  "author": "BridgeAPI <contato@bridgeapi.com.br>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EvandroSchechtel/bridgeapi-gateway"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.11",
+    "hono": "^4.12.8"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "prisma": "^7.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "nfe": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-nfe"],
+      "env": {}
+    }
+  }
+}

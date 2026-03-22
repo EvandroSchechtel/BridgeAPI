@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "bridgeapi-mercadolivre": {
+      "command": "npx",
+      "args": ["-y", "@bridgeapi/mcp-mercadolivre"],
+      "env": {
+        "MELI_APP_ID": "your-app-id",
+        "MELI_CLIENT_SECRET": "your-client-secret",
+        "MELI_ACCESS_TOKEN": "your-access-token",
+        "MELI_REFRESH_TOKEN": "your-refresh-token"
+      }
+    }
+  }
+}

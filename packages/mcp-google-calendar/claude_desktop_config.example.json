@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "google-calendar": {
+      "command": "npx",
+      "args": ["@bridgeapi/mcp-google-calendar"],
+      "env": {}
+    }
+  }
+}

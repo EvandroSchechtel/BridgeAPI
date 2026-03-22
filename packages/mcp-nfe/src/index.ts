@@ -1,171 +1,588 @@
 #!/usr/bin/env node
 /**
- * @bridgeapi/mcp-nfe — MCP Server
- * Part of the BridgeAPI ecosystem
+ * @bridgeapi/mcp-nfe — MCP Server para Notas Fiscais Eletronicas
+ *
+ * 16 tools para emissao, consulta, cancelamento e download de NFe/NFSe/NFCe.
+ * Compativel com eNotas, NFe.io e Focus NFe.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
   NFeClient,
-  preExecuteHook,
-  postExecuteHook,
   type NFeConfig,
-  type HookContext,
+  type NFeProvider,
+  type NFeEnvironment,
   type ApiResponse,
 } from "./nfe-client.js";
 
+// ─── Config ──────────────────────────────────────────────────────
+
 function loadConfig(): NFeConfig {
-  const nfe_api_token = process.env.NFE_API_TOKEN;
-  if (!nfe_api_token) throw new Error("NFE_API_TOKEN is required");
-  const nfe_company_id = process.env.NFE_COMPANY_ID;
-  if (!nfe_company_id) throw new Error("NFE_COMPANY_ID is required");
+  const apiToken = process.env.NFE_API_TOKEN;
+  if (!apiToken) throw new Error("NFE_API_TOKEN e obrigatorio");
+
+  const companyId = process.env.NFE_COMPANY_ID;
+  if (!companyId) throw new Error("NFE_COMPANY_ID e obrigatorio");
+
+  const provider = (process.env.NFE_PROVIDER || "enotas") as NFeProvider;
+  if (!["enotas", "nfeio", "focusnfe"].includes(provider)) {
+    throw new Error("NFE_PROVIDER deve ser enotas, nfeio ou focusnfe");
+  }
+
+  const environment = (process.env.NFE_ENVIRONMENT || "sandbox") as NFeEnvironment;
+  if (!["production", "sandbox"].includes(environment)) {
+    throw new Error("NFE_ENVIRONMENT deve ser production ou sandbox");
+  }
+
+  return { apiToken, provider, environment, companyId };
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────
+
+function formatResponse<T>(result: ApiResponse<T>): { content: Array<{ type: "text"; text: string }> } {
   return {
-    nfe_api_token: nfe_api_token,
-    nfe_company_id: nfe_company_id,
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(
+          {
+            success: result.success,
+            ...(result.data ? { data: result.data } : {}),
+            ...(result.error ? { error: result.error } : {}),
+            meta: result.meta,
+          },
+          null,
+          2
+        ),
+      },
+    ],
   };
 }
 
-async function executeWithHooks<T>(
-  toolName: string, params: Record<string, unknown>, config: NFeConfig,
-  executor: () => Promise<ApiResponse<T>>
-): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  const hookCtx: HookContext = { tool_name: toolName, params, config, timestamp: new Date().toISOString() };
-  const preResult = await preExecuteHook(hookCtx);
-  if (!preResult.allow) {
-    return { content: [{ type: "text", text: JSON.stringify({ success: false, blocked: true, reason: preResult.reason || "Blocked", escalation_id: preResult.escalation_id }) }] };
-  }
-  const response = await executor();
-  const postResult = await postExecuteHook(hookCtx, response);
-  return { content: [{ type: "text", text: JSON.stringify({ success: response.success, ...(response.data ? { data: response.data } : {}), ...(response.error ? { error: response.error } : {}), meta: { ...response.meta, confidence_score: null, execution_mode: "auto", flags: postResult.flags || [] } }, null, 2) }] };
-}
+// ─── Init ────────────────────────────────────────────────────────
 
 const config = loadConfig();
 const client = new NFeClient(config);
 
 const server = new McpServer(
   { name: "bridgeapi-nfe", version: "0.1.0" },
-  { capabilities: { tools: { listChanged: false }, resources: { listChanged: false }, prompts: { listChanged: false } } }
+  {
+    capabilities: {
+      tools: { listChanged: false },
+      resources: { listChanged: false },
+      prompts: { listChanged: false },
+    },
+  }
 );
 
-// ═══ TOOLS ═══
-server.tool("list_items", "List items/resources.", {
-  page: z.number().optional().default(1).describe("Page number"),
-  limit: z.number().optional().default(20).describe("Items per page"),
-  status: z.string().optional().describe("Filter by status"),
-  query: z.string().optional().describe("Search query"),
-}, async (params) => executeWithHooks("list_items", params, config, () =>
-  client.request(`/items?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+// ═════════════════════════════════════════════════════════════════
+// TOOLS (16)
+// ═════════════════════════════════════════════════════════════════
 
-server.tool("get_item", "Get item by ID.", {
-  id: z.string().describe("Item ID"),
-}, async ({ id }) => executeWithHooks("get_item", { id }, config, () => client.request(`/items/${id}`)));
+// ── 1. create_nfe ──
 
-server.tool("create_item", "Create a new item.", {
-  data: z.record(z.string(), z.unknown()).describe("Item data"),
-}, async ({ data }) => executeWithHooks("create_item", { data }, config, () => client.request("/items", "POST", data)));
+server.tool(
+  "create_nfe",
+  "Emitir uma NFe (Nota Fiscal Eletronica de Produto). Envia os dados para a SEFAZ e retorna o ID da nota.",
+  {
+    dados: z
+      .object({
+        natureza_operacao: z.string().describe("Ex: Venda de mercadoria"),
+        tipo_documento: z.number().optional().describe("0=Entrada, 1=Saida (padrao 1)"),
+        items: z
+          .array(
+            z.object({
+              descricao: z.string(),
+              ncm: z.string().describe("Codigo NCM do produto (8 digitos)"),
+              cfop: z.string().describe("Codigo CFOP (ex: 5102)"),
+              unidade: z.string().describe("Ex: UN, KG, CX"),
+              quantidade: z.number(),
+              valor_unitario: z.number(),
+              valor_total: z.number(),
+            })
+          )
+          .min(1)
+          .describe("Itens da nota fiscal"),
+        destinatario: z.object({
+          cpf_cnpj: z.string().describe("CPF ou CNPJ do destinatario"),
+          nome: z.string(),
+          endereco: z
+            .object({
+              logradouro: z.string(),
+              numero: z.string(),
+              complemento: z.string().optional(),
+              bairro: z.string(),
+              cidade: z.string(),
+              uf: z.string().length(2),
+              cep: z.string(),
+            })
+            .optional(),
+          email: z.string().optional(),
+        }),
+        informacoes_adicionais: z.string().optional(),
+      })
+      .describe("Dados completos da NFe"),
+  },
+  async ({ dados }) => formatResponse(await client.createNFe(dados))
+);
 
-server.tool("update_item", "Update an item.", {
-  id: z.string().describe("Item ID"),
-  data: z.record(z.string(), z.unknown()).describe("Fields to update"),
-}, async ({ id, data }) => executeWithHooks("update_item", { id, data }, config, () => client.request(`/items/${id}`, "PUT", data)));
+// ── 2. get_nfe ──
 
-server.tool("delete_item", "Delete an item.", {
-  id: z.string().describe("Item ID"),
-}, async ({ id }) => executeWithHooks("delete_item", { id }, config, () => client.request(`/items/${id}`, "DELETE")));
+server.tool(
+  "get_nfe",
+  "Consultar uma NFe pelo ID. Retorna status, chave de acesso, valores e dados do destinatario.",
+  {
+    nfe_id: z.string().describe("ID da NFe no provedor"),
+  },
+  async ({ nfe_id }) => formatResponse(await client.getNFe(nfe_id))
+);
 
-server.tool("list_orders", "List orders.", {
-  page: z.number().optional().default(1).describe("Page"),
-  limit: z.number().optional().default(20).describe("Limit"),
-  status: z.string().optional().describe("Status filter"),
-  start_date: z.string().optional().describe("Start date"),
-  end_date: z.string().optional().describe("End date"),
-}, async (params) => executeWithHooks("list_orders", params, config, () =>
-  client.request(`/orders?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+// ── 3. list_nfe ──
 
-server.tool("get_order", "Get order details.", {
-  id: z.string().describe("Order ID"),
-}, async ({ id }) => executeWithHooks("get_order", { id }, config, () => client.request(`/orders/${id}`)));
+server.tool(
+  "list_nfe",
+  "Listar notas fiscais de produto (NFe) emitidas, com filtros opcionais de data e status.",
+  {
+    inicio: z.string().optional().describe("Data inicio (YYYY-MM-DD)"),
+    fim: z.string().optional().describe("Data fim (YYYY-MM-DD)"),
+    status: z
+      .enum(["autorizada", "cancelada", "rejeitada", "pendente", "processando"])
+      .optional()
+      .describe("Filtrar por status"),
+    pagina: z.number().optional().describe("Numero da pagina"),
+    limite: z.number().optional().describe("Registros por pagina"),
+  },
+  async (params) =>
+    formatResponse(
+      await client.listNFe({
+        inicio: params.inicio,
+        fim: params.fim,
+        status: params.status,
+        pagina: params.pagina,
+        limite: params.limite,
+      })
+    )
+);
 
-server.tool("update_order", "Update order.", {
-  id: z.string().describe("Order ID"),
-  data: z.record(z.string(), z.unknown()).describe("Update data"),
-}, async ({ id, data }) => executeWithHooks("update_order", { id, data }, config, () => client.request(`/orders/${id}`, "PUT", data)));
+// ── 4. cancel_nfe ──
 
-server.tool("list_customers", "List customers.", {
-  page: z.number().optional().default(1).describe("Page"),
-  query: z.string().optional().describe("Search"),
-}, async (params) => executeWithHooks("list_customers", params, config, () =>
-  client.request(`/customers?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+server.tool(
+  "cancel_nfe",
+  "Cancelar uma NFe autorizada. A justificativa deve ter no minimo 15 caracteres (exigencia SEFAZ).",
+  {
+    nfe_id: z.string().describe("ID da NFe a cancelar"),
+    justificativa: z.string().min(15).describe("Motivo do cancelamento (min 15 caracteres)"),
+  },
+  async ({ nfe_id, justificativa }) => formatResponse(await client.cancelNFe(nfe_id, justificativa))
+);
 
-server.tool("get_customer", "Get customer by ID.", {
-  id: z.string().describe("Customer ID"),
-}, async ({ id }) => executeWithHooks("get_customer", { id }, config, () => client.request(`/customers/${id}`)));
+// ── 5. correct_nfe ──
 
-server.tool("get_analytics", "Get analytics data.", {
-  start_date: z.string().describe("Start date"),
-  end_date: z.string().describe("End date"),
-  metric: z.string().optional().describe("Metric name"),
-}, async (params) => executeWithHooks("get_analytics", params, config, () =>
-  client.request(`/analytics?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+server.tool(
+  "correct_nfe",
+  "Emitir Carta de Correcao (CC-e) para uma NFe autorizada. Nao altera valores, apenas informacoes complementares.",
+  {
+    nfe_id: z.string().describe("ID da NFe"),
+    correcao: z.string().min(15).describe("Texto da correcao (min 15 caracteres)"),
+  },
+  async ({ nfe_id, correcao }) => formatResponse(await client.correctNFe(nfe_id, correcao))
+);
 
-server.tool("get_profile", "Get account profile.", {},
-  async () => executeWithHooks("get_profile", {}, config, () => client.request("/me")));
+// ── 6. create_nfse ──
 
-server.tool("search", "Search the platform.", {
-  query: z.string().describe("Search query"),
-  type: z.string().optional().describe("Result type"),
-  limit: z.number().optional().default(20).describe("Max results"),
-}, async (params) => executeWithHooks("search", params, config, () =>
-  client.request(`/search?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+server.tool(
+  "create_nfse",
+  "Emitir uma NFSe (Nota Fiscal de Servico Eletronica). Para prestadores de servico.",
+  {
+    dados: z
+      .object({
+        servico: z.object({
+          descricao: z.string().describe("Descricao do servico prestado"),
+          codigo_servico: z.string().describe("Codigo do servico na lista LC 116/2003"),
+          aliquota_iss: z.number().describe("Aliquota do ISS (ex: 5.0 para 5%)"),
+          valor_servicos: z.number().describe("Valor total dos servicos"),
+          iss_retido: z.boolean().optional().describe("ISS retido pelo tomador?"),
+        }),
+        tomador: z.object({
+          cpf_cnpj: z.string().describe("CPF ou CNPJ do tomador"),
+          nome: z.string(),
+          endereco: z
+            .object({
+              logradouro: z.string(),
+              numero: z.string(),
+              complemento: z.string().optional(),
+              bairro: z.string(),
+              cidade: z.string(),
+              uf: z.string().length(2),
+              cep: z.string(),
+            })
+            .optional(),
+          email: z.string().optional(),
+        }),
+        valor: z.number().describe("Valor total da NFSe"),
+        competencia: z.string().optional().describe("Mes de competencia (YYYY-MM)"),
+        rps_numero: z.number().optional().describe("Numero do RPS"),
+        rps_serie: z.string().optional().describe("Serie do RPS"),
+      })
+      .describe("Dados completos da NFSe"),
+  },
+  async ({ dados }) => formatResponse(await client.createNFSe(dados))
+);
 
-server.tool("get_categories", "List categories.", {},
-  async () => executeWithHooks("get_categories", {}, config, () => client.request("/categories")));
+// ── 7. get_nfse ──
 
-server.tool("send_message", "Send a message.", {
-  to: z.string().describe("Recipient ID"),
-  text: z.string().describe("Message text"),
-}, async ({ to, text }) => executeWithHooks("send_message", { to, text }, config, () => client.request("/messages", "POST", { to, text })));
+server.tool(
+  "get_nfse",
+  "Consultar uma NFSe pelo ID. Retorna status, numero, valor e dados do tomador.",
+  {
+    nfse_id: z.string().describe("ID da NFSe no provedor"),
+  },
+  async ({ nfse_id }) => formatResponse(await client.getNFSe(nfse_id))
+);
 
-server.tool("get_webhooks", "List webhooks.", {},
-  async () => executeWithHooks("get_webhooks", {}, config, () => client.request("/webhooks")));
+// ── 8. list_nfse ──
 
-// ═══ RESOURCES ═══
-server.resource("items", "nfe://items", async () => {
-  const result = await client.request("/items?limit=50");
-  return { contents: [{ uri: "nfe://items", mimeType: "application/json", text: JSON.stringify(result.data, null, 2) }] };
-});
-server.resource("orders", "nfe://orders", async () => {
-  const result = await client.request("/orders?limit=50");
-  return { contents: [{ uri: "nfe://orders", mimeType: "application/json", text: JSON.stringify(result.data, null, 2) }] };
-});
-server.resource("profile", "nfe://profile", async () => {
-  const result = await client.request("/me");
-  return { contents: [{ uri: "nfe://profile", mimeType: "application/json", text: JSON.stringify(result.data, null, 2) }] };
-});
+server.tool(
+  "list_nfse",
+  "Listar notas fiscais de servico (NFSe) emitidas, com filtros opcionais.",
+  {
+    inicio: z.string().optional().describe("Data inicio (YYYY-MM-DD)"),
+    fim: z.string().optional().describe("Data fim (YYYY-MM-DD)"),
+    status: z
+      .enum(["autorizada", "cancelada", "rejeitada", "pendente", "processando"])
+      .optional()
+      .describe("Filtrar por status"),
+    pagina: z.number().optional().describe("Numero da pagina"),
+    limite: z.number().optional().describe("Registros por pagina"),
+  },
+  async (params) =>
+    formatResponse(
+      await client.listNFSe({
+        inicio: params.inicio,
+        fim: params.fim,
+        status: params.status,
+        pagina: params.pagina,
+        limite: params.limite,
+      })
+    )
+);
 
-// ═══ PROMPTS ═══
-server.prompt("item-manager", "Guia para gerenciar itens/produtos", {
-  action: z.string().describe("Acao desejada"),
-}, ({ action }) => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: `Preciso ${action} na plataforma. Use as tools disponiveis.` } }] }));
+// ── 9. cancel_nfse ──
 
-server.prompt("order-handler", "Guia para gerenciar pedidos", {
-  status: z.string().optional().describe("Status"),
-}, ({ status }) => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: `Gerenciar pedidos${status ? ` com status ${status}` : ""}. Use list_orders e update_order.` } }] }));
+server.tool(
+  "cancel_nfse",
+  "Cancelar uma NFSe autorizada. A justificativa deve ter no minimo 15 caracteres.",
+  {
+    nfse_id: z.string().describe("ID da NFSe a cancelar"),
+    justificativa: z.string().min(15).describe("Motivo do cancelamento (min 15 caracteres)"),
+  },
+  async ({ nfse_id, justificativa }) => formatResponse(await client.cancelNFSe(nfse_id, justificativa))
+);
 
-server.prompt("analytics-reporter", "Guia para relatorios", {
-  period: z.string().optional().describe("Periodo"),
-}, ({ period }) => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: `Gerar relatorio${period ? ` para ${period}` : ""}. Use get_analytics.` } }] }));
+// ── 10. create_nfce ──
 
-// ═══ START ═══
+server.tool(
+  "create_nfce",
+  "Emitir uma NFCe (Nota Fiscal de Consumidor Eletronica). Para vendas no varejo / ponto de venda.",
+  {
+    dados: z
+      .object({
+        items: z
+          .array(
+            z.object({
+              descricao: z.string(),
+              ncm: z.string(),
+              cfop: z.string(),
+              unidade: z.string(),
+              quantidade: z.number(),
+              valor_unitario: z.number(),
+              valor_total: z.number(),
+            })
+          )
+          .min(1)
+          .describe("Itens vendidos"),
+        pagamento: z.object({
+          forma: z
+            .string()
+            .describe("Forma de pagamento: 01=Dinheiro, 03=Cartao Credito, 04=Cartao Debito, 05=Pix"),
+          valor: z.number(),
+          troco: z.number().optional(),
+        }),
+        cpf_consumidor: z.string().optional().describe("CPF do consumidor (opcional)"),
+      })
+      .describe("Dados da NFCe"),
+  },
+  async ({ dados }) => formatResponse(await client.createNFCe(dados))
+);
+
+// ── 11. get_nfce ──
+
+server.tool(
+  "get_nfce",
+  "Consultar uma NFCe pelo ID.",
+  {
+    nfce_id: z.string().describe("ID da NFCe no provedor"),
+  },
+  async ({ nfce_id }) => formatResponse(await client.getNFCe(nfce_id))
+);
+
+// ── 12. download_pdf ──
+
+server.tool(
+  "download_pdf",
+  "Baixar o PDF (DANFE/DANFSE) de uma nota fiscal. Retorna o conteudo em base64.",
+  {
+    id: z.string().describe("ID da nota fiscal"),
+    tipo: z.enum(["nfe", "nfse", "nfce"]).describe("Tipo do documento"),
+  },
+  async ({ id, tipo }) => formatResponse(await client.downloadPDF(id, tipo))
+);
+
+// ── 13. download_xml ──
+
+server.tool(
+  "download_xml",
+  "Baixar o XML de uma nota fiscal. Retorna o conteudo em base64.",
+  {
+    id: z.string().describe("ID da nota fiscal"),
+    tipo: z.enum(["nfe", "nfse", "nfce"]).describe("Tipo do documento"),
+  },
+  async ({ id, tipo }) => formatResponse(await client.downloadXML(id, tipo))
+);
+
+// ── 14. get_sefaz_status ──
+
+server.tool(
+  "get_sefaz_status",
+  "Verificar o status dos servicos da SEFAZ. Util para saber se a emissao esta disponivel antes de emitir notas.",
+  {},
+  async () => formatResponse(await client.getStatus())
+);
+
+// ── 15. get_company ──
+
+server.tool(
+  "get_company",
+  "Consultar dados cadastrais da empresa emissora (razao social, CNPJ, endereco, regime tributario).",
+  {},
+  async () => formatResponse(await client.getCompany())
+);
+
+// ── 16. update_company ──
+
+server.tool(
+  "update_company",
+  "Atualizar dados cadastrais da empresa emissora. Envie apenas os campos que deseja alterar.",
+  {
+    razao_social: z.string().optional().describe("Razao social da empresa"),
+    cnpj: z.string().optional().describe("CNPJ (apenas numeros, 14 digitos)"),
+    inscricao_estadual: z.string().optional().describe("Inscricao estadual"),
+    inscricao_municipal: z.string().optional().describe("Inscricao municipal"),
+    regime_tributario: z
+      .number()
+      .optional()
+      .describe("1=Simples Nacional, 2=Simples Excesso, 3=Lucro Presumido/Real"),
+    endereco: z
+      .object({
+        logradouro: z.string(),
+        numero: z.string(),
+        complemento: z.string().optional(),
+        bairro: z.string(),
+        cidade: z.string(),
+        uf: z.string().length(2),
+        cep: z.string(),
+      })
+      .optional()
+      .describe("Endereco da empresa"),
+  },
+  async (params) => {
+    const data: Record<string, unknown> = {};
+    if (params.razao_social) data.razao_social = params.razao_social;
+    if (params.cnpj) data.cnpj = params.cnpj;
+    if (params.inscricao_estadual) data.inscricao_estadual = params.inscricao_estadual;
+    if (params.inscricao_municipal) data.inscricao_municipal = params.inscricao_municipal;
+    if (params.regime_tributario) data.regime_tributario = params.regime_tributario;
+    if (params.endereco) data.endereco = params.endereco;
+    return formatResponse(await client.updateCompany(data));
+  }
+);
+
+// ═════════════════════════════════════════════════════════════════
+// RESOURCES (3)
+// ═════════════════════════════════════════════════════════════════
+
+server.resource(
+  "invoices",
+  "nfe://invoices",
+  async () => {
+    const [nfeResult, nfseResult] = await Promise.all([
+      client.listNFe({ limite: 20 }),
+      client.listNFSe({ limite: 20 }),
+    ]);
+    const summary = {
+      nfe: nfeResult.success ? nfeResult.data : { error: nfeResult.error },
+      nfse: nfseResult.success ? nfseResult.data : { error: nfseResult.error },
+    };
+    return {
+      contents: [
+        {
+          uri: "nfe://invoices",
+          mimeType: "application/json",
+          text: JSON.stringify(summary, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+server.resource(
+  "company",
+  "nfe://company",
+  async () => {
+    const result = await client.getCompany();
+    return {
+      contents: [
+        {
+          uri: "nfe://company",
+          mimeType: "application/json",
+          text: JSON.stringify(result.success ? result.data : { error: result.error }, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+server.resource(
+  "status",
+  "nfe://status",
+  async () => {
+    const result = await client.getStatus();
+    return {
+      contents: [
+        {
+          uri: "nfe://status",
+          mimeType: "application/json",
+          text: JSON.stringify(result.success ? result.data : { error: result.error }, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+// ═════════════════════════════════════════════════════════════════
+// PROMPTS (3) — em Portugues
+// ═════════════════════════════════════════════════════════════════
+
+server.prompt(
+  "emissor-nfe",
+  "Guia passo a passo para emissao de Nota Fiscal Eletronica (NFe, NFSe ou NFCe)",
+  {
+    tipo: z.enum(["nfe", "nfse", "nfce"]).describe("Tipo de nota a emitir"),
+  },
+  ({ tipo }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `Preciso emitir uma ${tipo.toUpperCase()}. Me guie passo a passo:
+
+1. Primeiro, verifique o status da SEFAZ com get_sefaz_status.
+2. Consulte os dados da empresa emissora com get_company para confirmar cadastro.
+3. ${
+            tipo === "nfe"
+              ? "Use create_nfe com: natureza_operacao, items (descricao, NCM, CFOP, quantidade, valores), e destinatario (CPF/CNPJ, nome, endereco)."
+              : tipo === "nfse"
+                ? "Use create_nfse com: servico (descricao, codigo_servico, aliquota_iss, valor), tomador (CPF/CNPJ, nome), e valor total."
+                : "Use create_nfce com: items (descricao, NCM, CFOP, quantidade, valores) e pagamento (forma, valor)."
+          }
+4. Apos emissao, consulte o resultado com get_${tipo} e baixe o PDF com download_pdf.
+
+Valide todos os campos obrigatorios antes de enviar. Pergunte ao usuario os dados que faltarem.`,
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "cancelamento",
+  "Guia para cancelamento de notas fiscais com os requisitos legais",
+  {
+    tipo: z.enum(["nfe", "nfse", "nfce"]).describe("Tipo de nota a cancelar"),
+    id: z.string().describe("ID da nota fiscal"),
+  },
+  ({ tipo, id }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `Preciso cancelar a ${tipo.toUpperCase()} com ID ${id}. Siga o procedimento:
+
+1. Primeiro, consulte a nota com get_${tipo}(${id}) para verificar se ela esta autorizada.
+2. Uma nota so pode ser cancelada se:
+   - NFe: dentro de 24 horas da autorizacao (algumas UFs permitem 168h).
+   - NFSe: prazo varia por municipio.
+   - NFCe: dentro de 30 minutos da autorizacao.
+3. A justificativa de cancelamento e OBRIGATORIA e deve ter no minimo 15 caracteres.
+4. Use cancel_${tipo === "nfce" ? "nfe" : tipo}(id, justificativa) para efetuar o cancelamento.
+5. Apos o cancelamento, baixe o XML do evento com download_xml para arquivo.
+
+ATENCAO: O cancelamento e irreversivel. Confirme com o usuario antes de executar.`,
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "relatorio-fiscal",
+  "Gerar relatorio fiscal com totais de notas emitidas em um periodo",
+  {
+    periodo_inicio: z.string().describe("Data inicio (YYYY-MM-DD)"),
+    periodo_fim: z.string().describe("Data fim (YYYY-MM-DD)"),
+  },
+  ({ periodo_inicio, periodo_fim }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `Gere um relatorio fiscal consolidado de ${periodo_inicio} ate ${periodo_fim}. Passos:
+
+1. Use list_nfe(inicio="${periodo_inicio}", fim="${periodo_fim}") para listar todas as NFe do periodo.
+2. Use list_nfse(inicio="${periodo_inicio}", fim="${periodo_fim}") para listar todas as NFSe do periodo.
+3. Consolide os dados em um resumo com:
+   - Total de notas emitidas (por tipo: NFe, NFSe)
+   - Total de notas autorizadas vs canceladas vs rejeitadas
+   - Valor total faturado (NFe + NFSe)
+   - Valor total de impostos (se disponivel)
+   - Lista das 10 maiores notas por valor
+4. Apresente o relatorio em formato de tabela organizada.
+5. Destaque eventuais notas rejeitadas que precisem de atencao.
+
+Se houver paginacao, busque todas as paginas para ter os dados completos.`,
+        },
+      },
+    ],
+  })
+);
+
+// ═════════════════════════════════════════════════════════════════
+// START SERVER
+// ═════════════════════════════════════════════════════════════════
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("BridgeAPI NFe MCP Server v0.1.0 running on stdio");
+  console.error(
+    `BridgeAPI NFe MCP Server v0.1.0 [${config.provider}/${config.environment}] running on stdio`
+  );
 }
-main().catch((err) => { console.error("Fatal:", err); process.exit(1); });
+
+main().catch((err) => {
+  console.error("Fatal:", err);
+  process.exit(1);
+});

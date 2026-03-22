@@ -2,6 +2,8 @@
 /**
  * @bridgeapi/mcp-temu — MCP Server
  * Part of the BridgeAPI ecosystem
+ *
+ * 18 tools  |  3 resources  |  3 prompts (PT-BR)
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -15,157 +17,471 @@ import {
   type ApiResponse,
 } from "./temu-client.js";
 
+// ─── Config loader ───────────────────────────────────────────────────────────
+
 function loadConfig(): TemuConfig {
-  const temu_app_key = process.env.TEMU_APP_KEY;
-  if (!temu_app_key) throw new Error("TEMU_APP_KEY is required");
-  const temu_access_token = process.env.TEMU_ACCESS_TOKEN;
-  if (!temu_access_token) throw new Error("TEMU_ACCESS_TOKEN is required");
+  const appKey = process.env.TEMU_APP_KEY;
+  if (!appKey) throw new Error("TEMU_APP_KEY is required");
+  const appSecret = process.env.TEMU_APP_SECRET;
+  if (!appSecret) throw new Error("TEMU_APP_SECRET is required");
+  const accessToken = process.env.TEMU_ACCESS_TOKEN;
+  if (!accessToken) throw new Error("TEMU_ACCESS_TOKEN is required");
+  const shopId = process.env.TEMU_SHOP_ID;
+  if (!shopId) throw new Error("TEMU_SHOP_ID is required");
+  return { appKey, appSecret, accessToken, shopId };
+}
+
+// ─── Hook wrapper ────────────────────────────────────────────────────────────
+
+async function executeWithHooks<T>(
+  toolName: string,
+  params: Record<string, unknown>,
+  config: TemuConfig,
+  executor: () => Promise<ApiResponse<T>>,
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const hookCtx: HookContext = {
+    tool_name: toolName,
+    params,
+    config,
+    timestamp: new Date().toISOString(),
+  };
+
+  const preResult = await preExecuteHook(hookCtx);
+  if (!preResult.allow) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            blocked: true,
+            reason: preResult.reason || "Blocked",
+            escalation_id: preResult.escalation_id,
+          }),
+        },
+      ],
+    };
+  }
+
+  const response = await executor();
+  const postResult = await postExecuteHook(hookCtx, response);
+
   return {
-    temu_app_key: temu_app_key,
-    temu_access_token: temu_access_token,
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            success: response.success,
+            ...(response.data ? { data: response.data } : {}),
+            ...(response.error ? { error: response.error } : {}),
+            meta: {
+              ...response.meta,
+              confidence_score: null,
+              execution_mode: "auto",
+              flags: postResult.flags || [],
+            },
+          },
+          null,
+          2,
+        ),
+      },
+    ],
   };
 }
 
-async function executeWithHooks<T>(
-  toolName: string, params: Record<string, unknown>, config: TemuConfig,
-  executor: () => Promise<ApiResponse<T>>
-): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  const hookCtx: HookContext = { tool_name: toolName, params, config, timestamp: new Date().toISOString() };
-  const preResult = await preExecuteHook(hookCtx);
-  if (!preResult.allow) {
-    return { content: [{ type: "text", text: JSON.stringify({ success: false, blocked: true, reason: preResult.reason || "Blocked", escalation_id: preResult.escalation_id }) }] };
-  }
-  const response = await executor();
-  const postResult = await postExecuteHook(hookCtx, response);
-  return { content: [{ type: "text", text: JSON.stringify({ success: response.success, ...(response.data ? { data: response.data } : {}), ...(response.error ? { error: response.error } : {}), meta: { ...response.meta, confidence_score: null, execution_mode: "auto", flags: postResult.flags || [] } }, null, 2) }] };
-}
+// ─── Bootstrap ───────────────────────────────────────────────────────────────
 
 const config = loadConfig();
 const client = new TemuClient(config);
 
 const server = new McpServer(
   { name: "bridgeapi-temu", version: "0.1.0" },
-  { capabilities: { tools: { listChanged: false }, resources: { listChanged: false }, prompts: { listChanged: false } } }
+  {
+    capabilities: {
+      tools: { listChanged: false },
+      resources: { listChanged: false },
+      prompts: { listChanged: false },
+    },
+  },
 );
 
-// ═══ TOOLS ═══
-server.tool("list_items", "List items/resources.", {
-  page: z.number().optional().default(1).describe("Page number"),
-  limit: z.number().optional().default(20).describe("Items per page"),
-  status: z.string().optional().describe("Filter by status"),
-  query: z.string().optional().describe("Search query"),
-}, async (params) => executeWithHooks("list_items", params, config, () =>
-  client.request(`/items?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOOLS (18)
+// ═══════════════════════════════════════════════════════════════════════════════
 
-server.tool("get_item", "Get item by ID.", {
-  id: z.string().describe("Item ID"),
-}, async ({ id }) => executeWithHooks("get_item", { id }, config, () => client.request(`/items/${id}`)));
+// ─── Products (5) ────────────────────────────────────────────────────────────
 
-server.tool("create_item", "Create a new item.", {
-  data: z.record(z.string(), z.unknown()).describe("Item data"),
-}, async ({ data }) => executeWithHooks("create_item", { data }, config, () => client.request("/items", "POST", data)));
+server.tool(
+  "get_products",
+  "Listar produtos da loja Temu com paginacao e filtro de status.",
+  {
+    page: z.number().optional().default(1).describe("Numero da pagina"),
+    page_size: z.number().optional().default(20).describe("Itens por pagina"),
+    status: z.string().optional().describe("Filtrar por status do produto"),
+  },
+  async (params) =>
+    executeWithHooks("get_products", params, config, () =>
+      client.getProducts(params),
+    ),
+);
 
-server.tool("update_item", "Update an item.", {
-  id: z.string().describe("Item ID"),
-  data: z.record(z.string(), z.unknown()).describe("Fields to update"),
-}, async ({ id, data }) => executeWithHooks("update_item", { id, data }, config, () => client.request(`/items/${id}`, "PUT", data)));
+server.tool(
+  "get_product",
+  "Obter detalhes de um produto Temu pelo ID.",
+  {
+    product_id: z.string().describe("ID do produto"),
+  },
+  async ({ product_id }) =>
+    executeWithHooks("get_product", { product_id }, config, () =>
+      client.getProduct(product_id),
+    ),
+);
 
-server.tool("delete_item", "Delete an item.", {
-  id: z.string().describe("Item ID"),
-}, async ({ id }) => executeWithHooks("delete_item", { id }, config, () => client.request(`/items/${id}`, "DELETE")));
+server.tool(
+  "create_product",
+  "Criar um novo produto na loja Temu.",
+  {
+    data: z.record(z.string(), z.unknown()).describe("Dados do produto (titulo, descricao, preco, imagens, categoria, etc.)"),
+  },
+  async ({ data }) =>
+    executeWithHooks("create_product", { data }, config, () =>
+      client.createProduct(data),
+    ),
+);
 
-server.tool("list_orders", "List orders.", {
-  page: z.number().optional().default(1).describe("Page"),
-  limit: z.number().optional().default(20).describe("Limit"),
-  status: z.string().optional().describe("Status filter"),
-  start_date: z.string().optional().describe("Start date"),
-  end_date: z.string().optional().describe("End date"),
-}, async (params) => executeWithHooks("list_orders", params, config, () =>
-  client.request(`/orders?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+server.tool(
+  "update_product",
+  "Atualizar campos de um produto existente na Temu.",
+  {
+    product_id: z.string().describe("ID do produto"),
+    data: z.record(z.string(), z.unknown()).describe("Campos a atualizar"),
+  },
+  async ({ product_id, data }) =>
+    executeWithHooks("update_product", { product_id, data }, config, () =>
+      client.updateProduct(product_id, data),
+    ),
+);
 
-server.tool("get_order", "Get order details.", {
-  id: z.string().describe("Order ID"),
-}, async ({ id }) => executeWithHooks("get_order", { id }, config, () => client.request(`/orders/${id}`)));
+server.tool(
+  "delete_product",
+  "Remover um produto da loja Temu.",
+  {
+    product_id: z.string().describe("ID do produto a remover"),
+  },
+  async ({ product_id }) =>
+    executeWithHooks("delete_product", { product_id }, config, () =>
+      client.deleteProduct(product_id),
+    ),
+);
 
-server.tool("update_order", "Update order.", {
-  id: z.string().describe("Order ID"),
-  data: z.record(z.string(), z.unknown()).describe("Update data"),
-}, async ({ id, data }) => executeWithHooks("update_order", { id, data }, config, () => client.request(`/orders/${id}`, "PUT", data)));
+// ─── Orders (4) ──────────────────────────────────────────────────────────────
 
-server.tool("list_customers", "List customers.", {
-  page: z.number().optional().default(1).describe("Page"),
-  query: z.string().optional().describe("Search"),
-}, async (params) => executeWithHooks("list_customers", params, config, () =>
-  client.request(`/customers?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+server.tool(
+  "get_orders",
+  "Listar pedidos da loja Temu com filtros de status e periodo.",
+  {
+    page: z.number().optional().default(1).describe("Numero da pagina"),
+    page_size: z.number().optional().default(20).describe("Itens por pagina"),
+    status: z.string().optional().describe("Filtrar por status do pedido"),
+    start_time: z.string().optional().describe("Data inicio (ISO 8601)"),
+    end_time: z.string().optional().describe("Data fim (ISO 8601)"),
+  },
+  async (params) =>
+    executeWithHooks("get_orders", params, config, () =>
+      client.getOrders(params),
+    ),
+);
 
-server.tool("get_customer", "Get customer by ID.", {
-  id: z.string().describe("Customer ID"),
-}, async ({ id }) => executeWithHooks("get_customer", { id }, config, () => client.request(`/customers/${id}`)));
+server.tool(
+  "get_order",
+  "Obter detalhes completos de um pedido Temu.",
+  {
+    order_id: z.string().describe("ID do pedido"),
+  },
+  async ({ order_id }) =>
+    executeWithHooks("get_order", { order_id }, config, () =>
+      client.getOrder(order_id),
+    ),
+);
 
-server.tool("get_analytics", "Get analytics data.", {
-  start_date: z.string().describe("Start date"),
-  end_date: z.string().describe("End date"),
-  metric: z.string().optional().describe("Metric name"),
-}, async (params) => executeWithHooks("get_analytics", params, config, () =>
-  client.request(`/analytics?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+server.tool(
+  "ship_order",
+  "Marcar pedido como enviado informando dados de rastreamento.",
+  {
+    order_id: z.string().describe("ID do pedido"),
+    data: z.record(z.string(), z.unknown()).describe("Dados de envio (tracking_number, carrier, etc.)"),
+  },
+  async ({ order_id, data }) =>
+    executeWithHooks("ship_order", { order_id, data }, config, () =>
+      client.shipOrder(order_id, data),
+    ),
+);
 
-server.tool("get_profile", "Get account profile.", {},
-  async () => executeWithHooks("get_profile", {}, config, () => client.request("/me")));
+server.tool(
+  "get_shipment_info",
+  "Consultar informacoes de envio/rastreamento de um pedido.",
+  {
+    order_id: z.string().describe("ID do pedido"),
+  },
+  async ({ order_id }) =>
+    executeWithHooks("get_shipment_info", { order_id }, config, () =>
+      client.getShipmentInfo(order_id),
+    ),
+);
 
-server.tool("search", "Search the platform.", {
-  query: z.string().describe("Search query"),
-  type: z.string().optional().describe("Result type"),
-  limit: z.number().optional().default(20).describe("Max results"),
-}, async (params) => executeWithHooks("search", params, config, () =>
-  client.request(`/search?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+// ─── Categories (2) ──────────────────────────────────────────────────────────
 
-server.tool("get_categories", "List categories.", {},
-  async () => executeWithHooks("get_categories", {}, config, () => client.request("/categories")));
+server.tool(
+  "get_categories",
+  "Listar todas as categorias disponiveis na Temu.",
+  {},
+  async () =>
+    executeWithHooks("get_categories", {}, config, () =>
+      client.getCategories(),
+    ),
+);
 
-server.tool("send_message", "Send a message.", {
-  to: z.string().describe("Recipient ID"),
-  text: z.string().describe("Message text"),
-}, async ({ to, text }) => executeWithHooks("send_message", { to, text }, config, () => client.request("/messages", "POST", { to, text })));
+server.tool(
+  "get_category_attributes",
+  "Obter atributos obrigatorios/opcionais de uma categoria Temu.",
+  {
+    category_id: z.string().describe("ID da categoria"),
+  },
+  async ({ category_id }) =>
+    executeWithHooks("get_category_attributes", { category_id }, config, () =>
+      client.getCategoryAttributes(category_id),
+    ),
+);
 
-server.tool("get_webhooks", "List webhooks.", {},
-  async () => executeWithHooks("get_webhooks", {}, config, () => client.request("/webhooks")));
+// ─── Inventory (2) ───────────────────────────────────────────────────────────
 
-// ═══ RESOURCES ═══
-server.resource("items", "temu://items", async () => {
-  const result = await client.request("/items?limit=50");
-  return { contents: [{ uri: "temu://items", mimeType: "application/json", text: JSON.stringify(result.data, null, 2) }] };
+server.tool(
+  "get_inventory",
+  "Consultar estoque atual de um produto Temu.",
+  {
+    product_id: z.string().describe("ID do produto"),
+  },
+  async ({ product_id }) =>
+    executeWithHooks("get_inventory", { product_id }, config, () =>
+      client.getInventory(product_id),
+    ),
+);
+
+server.tool(
+  "update_inventory",
+  "Atualizar quantidade em estoque de um produto Temu.",
+  {
+    product_id: z.string().describe("ID do produto"),
+    data: z.record(z.string(), z.unknown()).describe("Dados de estoque (quantity, sku_stocks, etc.)"),
+  },
+  async ({ product_id, data }) =>
+    executeWithHooks("update_inventory", { product_id, data }, config, () =>
+      client.updateInventory(product_id, data),
+    ),
+);
+
+// ─── Returns / After-sale (3) ────────────────────────────────────────────────
+
+server.tool(
+  "get_return_orders",
+  "Listar pedidos de devolucao/pos-venda na Temu.",
+  {
+    page: z.number().optional().default(1).describe("Numero da pagina"),
+    page_size: z.number().optional().default(20).describe("Itens por pagina"),
+    status: z.string().optional().describe("Filtrar por status da devolucao"),
+  },
+  async (params) =>
+    executeWithHooks("get_return_orders", params, config, () =>
+      client.getReturnOrders(params),
+    ),
+);
+
+server.tool(
+  "approve_return",
+  "Aprovar uma solicitacao de devolucao na Temu.",
+  {
+    return_id: z.string().describe("ID da devolucao"),
+  },
+  async ({ return_id }) =>
+    executeWithHooks("approve_return", { return_id }, config, () =>
+      client.approveReturn(return_id),
+    ),
+);
+
+server.tool(
+  "reject_return",
+  "Rejeitar uma solicitacao de devolucao na Temu informando motivo.",
+  {
+    return_id: z.string().describe("ID da devolucao"),
+    reason: z.string().describe("Motivo da rejeicao"),
+  },
+  async ({ return_id, reason }) =>
+    executeWithHooks("reject_return", { return_id, reason }, config, () =>
+      client.rejectReturn(return_id, reason),
+    ),
+);
+
+// ─── Shop / Finance (2) ──────────────────────────────────────────────────────
+
+server.tool(
+  "get_shop_info",
+  "Obter informacoes da loja Temu (nome, status, metricas).",
+  {},
+  async () =>
+    executeWithHooks("get_shop_info", {}, config, () =>
+      client.getShopInfo(),
+    ),
+);
+
+server.tool(
+  "get_financial_statement",
+  "Obter extrato financeiro da loja Temu por periodo.",
+  {
+    start_date: z.string().describe("Data inicio (YYYY-MM-DD)"),
+    end_date: z.string().describe("Data fim (YYYY-MM-DD)"),
+    page: z.number().optional().default(1).describe("Numero da pagina"),
+    page_size: z.number().optional().default(20).describe("Itens por pagina"),
+  },
+  async (params) =>
+    executeWithHooks("get_financial_statement", params, config, () =>
+      client.getFinancialStatement(params),
+    ),
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RESOURCES (3)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+server.resource("products", "temu://products", async () => {
+  const result = await client.getProducts({ page: 1, page_size: 50 });
+  return {
+    contents: [
+      {
+        uri: "temu://products",
+        mimeType: "application/json",
+        text: JSON.stringify(result.data, null, 2),
+      },
+    ],
+  };
 });
+
 server.resource("orders", "temu://orders", async () => {
-  const result = await client.request("/orders?limit=50");
-  return { contents: [{ uri: "temu://orders", mimeType: "application/json", text: JSON.stringify(result.data, null, 2) }] };
+  const result = await client.getOrders({ page: 1, page_size: 50 });
+  return {
+    contents: [
+      {
+        uri: "temu://orders",
+        mimeType: "application/json",
+        text: JSON.stringify(result.data, null, 2),
+      },
+    ],
+  };
 });
-server.resource("profile", "temu://profile", async () => {
-  const result = await client.request("/me");
-  return { contents: [{ uri: "temu://profile", mimeType: "application/json", text: JSON.stringify(result.data, null, 2) }] };
+
+server.resource("shop", "temu://shop", async () => {
+  const result = await client.getShopInfo();
+  return {
+    contents: [
+      {
+        uri: "temu://shop",
+        mimeType: "application/json",
+        text: JSON.stringify(result.data, null, 2),
+      },
+    ],
+  };
 });
 
-// ═══ PROMPTS ═══
-server.prompt("item-manager", "Guia para gerenciar itens/produtos", {
-  action: z.string().describe("Acao desejada"),
-}, ({ action }) => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: `Preciso ${action} na plataforma. Use as tools disponiveis.` } }] }));
+// ═══════════════════════════════════════════════════════════════════════════════
+// PROMPTS (3 — PT-BR)
+// ═══════════════════════════════════════════════════════════════════════════════
 
-server.prompt("order-handler", "Guia para gerenciar pedidos", {
-  status: z.string().optional().describe("Status"),
-}, ({ status }) => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: `Gerenciar pedidos${status ? ` com status ${status}` : ""}. Use list_orders e update_order.` } }] }));
+server.prompt(
+  "listador-produtos",
+  "Guia para listar, filtrar e inspecionar produtos da loja Temu",
+  {
+    filtro: z.string().optional().describe("Filtro ou busca desejada"),
+  },
+  ({ filtro }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: [
+            "Voce e um assistente especializado na plataforma Temu.",
+            `Preciso listar produtos${filtro ? ` com filtro: "${filtro}"` : ""}.`,
+            "Use a tool get_products para buscar a listagem com paginacao.",
+            "Para detalhes de um produto especifico, use get_product.",
+            "Apresente os resultados em formato de tabela quando possivel.",
+          ].join("\n"),
+        },
+      },
+    ],
+  }),
+);
 
-server.prompt("analytics-reporter", "Guia para relatorios", {
-  period: z.string().optional().describe("Periodo"),
-}, ({ period }) => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: `Gerar relatorio${period ? ` para ${period}` : ""}. Use get_analytics.` } }] }));
+server.prompt(
+  "expedidor-pedidos",
+  "Guia para gerenciar expedicao e rastreamento de pedidos Temu",
+  {
+    status: z.string().optional().describe("Filtrar pedidos por status"),
+  },
+  ({ status }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: [
+            "Voce e um assistente de logistica para lojas Temu.",
+            `Preciso gerenciar pedidos${status ? ` com status "${status}"` : ""}.`,
+            "Use get_orders para listar, get_order para detalhes,",
+            "ship_order para informar envio e get_shipment_info para rastreamento.",
+            "Alerte sobre pedidos com prazo de envio proximo do vencimento.",
+          ].join("\n"),
+        },
+      },
+    ],
+  }),
+);
 
-// ═══ START ═══
+server.prompt(
+  "sincronizador-estoque",
+  "Guia para consultar e atualizar estoque de produtos Temu",
+  {
+    produto: z.string().optional().describe("ID ou nome do produto"),
+  },
+  ({ produto }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: [
+            "Voce e um assistente de gestao de estoque para lojas Temu.",
+            `Preciso sincronizar estoque${produto ? ` do produto "${produto}"` : ""}.`,
+            "Use get_inventory para consultar quantidades atuais",
+            "e update_inventory para ajustar niveis de estoque.",
+            "Alerte sobre produtos com estoque abaixo de 10 unidades.",
+          ].join("\n"),
+        },
+      },
+    ],
+  }),
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// START
+// ═══════════════════════════════════════════════════════════════════════════════
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("BridgeAPI Temu MCP Server v0.1.0 running on stdio");
 }
-main().catch((err) => { console.error("Fatal:", err); process.exit(1); });
+
+main().catch((err) => {
+  console.error("Fatal:", err);
+  process.exit(1);
+});

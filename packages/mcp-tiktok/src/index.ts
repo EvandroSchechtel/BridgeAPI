@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
  * @bridgeapi/mcp-tiktok — MCP Server
+ * TikTok Content API integration for AI Agents
  * Part of the BridgeAPI ecosystem
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -15,157 +16,442 @@ import {
   type ApiResponse,
 } from "./tiktok-client.js";
 
+// ═══════════════════════════════════════════════════════════════════
+// Config
+// ═══════════════════════════════════════════════════════════════════
 function loadConfig(): TikTokConfig {
-  const tiktok_access_token = process.env.TIKTOK_ACCESS_TOKEN;
-  if (!tiktok_access_token) throw new Error("TIKTOK_ACCESS_TOKEN is required");
-  const tiktok_app_id = process.env.TIKTOK_APP_ID;
-  if (!tiktok_app_id) throw new Error("TIKTOK_APP_ID is required");
+  const accessToken = process.env.TIKTOK_ACCESS_TOKEN;
+  if (!accessToken) throw new Error("TIKTOK_ACCESS_TOKEN is required");
+  const appId = process.env.TIKTOK_APP_ID;
+  if (!appId) throw new Error("TIKTOK_APP_ID is required");
+  const appSecret = process.env.TIKTOK_APP_SECRET;
+  if (!appSecret) throw new Error("TIKTOK_APP_SECRET is required");
+  const openId = process.env.TIKTOK_OPEN_ID;
+  if (!openId) throw new Error("TIKTOK_OPEN_ID is required");
+  return { accessToken, appId, appSecret, openId };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Hook wrapper
+// ═══════════════════════════════════════════════════════════════════
+async function executeWithHooks<T>(
+  toolName: string,
+  params: Record<string, unknown>,
+  config: TikTokConfig,
+  executor: () => Promise<ApiResponse<T>>,
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const hookCtx: HookContext = {
+    tool_name: toolName,
+    params,
+    config,
+    timestamp: new Date().toISOString(),
+  };
+
+  const preResult = await preExecuteHook(hookCtx);
+  if (!preResult.allow) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            blocked: true,
+            reason: preResult.reason || "Blocked",
+            escalation_id: preResult.escalation_id,
+          }),
+        },
+      ],
+    };
+  }
+
+  const response = await executor();
+  const postResult = await postExecuteHook(hookCtx, response);
+
   return {
-    tiktok_access_token: tiktok_access_token,
-    tiktok_app_id: tiktok_app_id,
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            success: response.success,
+            ...(response.data ? { data: response.data } : {}),
+            ...(response.error ? { error: response.error } : {}),
+            meta: {
+              ...response.meta,
+              confidence_score: null,
+              execution_mode: "auto",
+              flags: postResult.flags || [],
+            },
+          },
+          null,
+          2,
+        ),
+      },
+    ],
   };
 }
 
-async function executeWithHooks<T>(
-  toolName: string, params: Record<string, unknown>, config: TikTokConfig,
-  executor: () => Promise<ApiResponse<T>>
-): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  const hookCtx: HookContext = { tool_name: toolName, params, config, timestamp: new Date().toISOString() };
-  const preResult = await preExecuteHook(hookCtx);
-  if (!preResult.allow) {
-    return { content: [{ type: "text", text: JSON.stringify({ success: false, blocked: true, reason: preResult.reason || "Blocked", escalation_id: preResult.escalation_id }) }] };
-  }
-  const response = await executor();
-  const postResult = await postExecuteHook(hookCtx, response);
-  return { content: [{ type: "text", text: JSON.stringify({ success: response.success, ...(response.data ? { data: response.data } : {}), ...(response.error ? { error: response.error } : {}), meta: { ...response.meta, confidence_score: null, execution_mode: "auto", flags: postResult.flags || [] } }, null, 2) }] };
-}
-
+// ═══════════════════════════════════════════════════════════════════
+// Bootstrap
+// ═══════════════════════════════════════════════════════════════════
 const config = loadConfig();
 const client = new TikTokClient(config);
 
 const server = new McpServer(
   { name: "bridgeapi-tiktok", version: "0.1.0" },
-  { capabilities: { tools: { listChanged: false }, resources: { listChanged: false }, prompts: { listChanged: false } } }
+  {
+    capabilities: {
+      tools: { listChanged: false },
+      resources: { listChanged: false },
+      prompts: { listChanged: false },
+    },
+  },
 );
 
-// ═══ TOOLS ═══
-server.tool("list_items", "List items/resources.", {
-  page: z.number().optional().default(1).describe("Page number"),
-  limit: z.number().optional().default(20).describe("Items per page"),
-  status: z.string().optional().describe("Filter by status"),
-  query: z.string().optional().describe("Search query"),
-}, async (params) => executeWithHooks("list_items", params, config, () =>
-  client.request(`/items?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+// ═══════════════════════════════════════════════════════════════════
+// TOOLS (14 TikTok-specific)
+// ═══════════════════════════════════════════════════════════════════
 
-server.tool("get_item", "Get item by ID.", {
-  id: z.string().describe("Item ID"),
-}, async ({ id }) => executeWithHooks("get_item", { id }, config, () => client.request(`/items/${id}`)));
+// 1. get_user_info — Perfil do criador autenticado
+server.tool(
+  "get_user_info",
+  "Retorna informacoes do perfil do criador autenticado no TikTok (nome, bio, contadores).",
+  {},
+  async () =>
+    executeWithHooks("get_user_info", {}, config, () =>
+      client.getUserInfo(),
+    ),
+);
 
-server.tool("create_item", "Create a new item.", {
-  data: z.record(z.string(), z.unknown()).describe("Item data"),
-}, async ({ data }) => executeWithHooks("create_item", { data }, config, () => client.request("/items", "POST", data)));
+// 2. get_user_videos — Listar videos do criador
+server.tool(
+  "get_user_videos",
+  "Lista os videos publicados pelo criador autenticado, com paginacao.",
+  {
+    max_count: z.number().optional().default(20).describe("Quantidade maxima de videos (1-20)"),
+    cursor: z.number().optional().describe("Cursor para paginacao"),
+  },
+  async ({ max_count, cursor }) =>
+    executeWithHooks("get_user_videos", { max_count, cursor }, config, () =>
+      client.getUserVideos(max_count, cursor),
+    ),
+);
 
-server.tool("update_item", "Update an item.", {
-  id: z.string().describe("Item ID"),
-  data: z.record(z.string(), z.unknown()).describe("Fields to update"),
-}, async ({ id, data }) => executeWithHooks("update_item", { id, data }, config, () => client.request(`/items/${id}`, "PUT", data)));
+// 3. get_video_info — Detalhes de um video especifico
+server.tool(
+  "get_video_info",
+  "Retorna detalhes completos de um video especifico pelo ID.",
+  {
+    video_id: z.string().describe("ID do video no TikTok"),
+  },
+  async ({ video_id }) =>
+    executeWithHooks("get_video_info", { video_id }, config, () =>
+      client.getVideoInfo(video_id),
+    ),
+);
 
-server.tool("delete_item", "Delete an item.", {
-  id: z.string().describe("Item ID"),
-}, async ({ id }) => executeWithHooks("delete_item", { id }, config, () => client.request(`/items/${id}`, "DELETE")));
+// 4. get_video_comments — Comentarios de um video
+server.tool(
+  "get_video_comments",
+  "Lista os comentarios de um video especifico.",
+  {
+    video_id: z.string().describe("ID do video"),
+  },
+  async ({ video_id }) =>
+    executeWithHooks("get_video_comments", { video_id }, config, () =>
+      client.getVideoComments(video_id),
+    ),
+);
 
-server.tool("list_orders", "List orders.", {
-  page: z.number().optional().default(1).describe("Page"),
-  limit: z.number().optional().default(20).describe("Limit"),
-  status: z.string().optional().describe("Status filter"),
-  start_date: z.string().optional().describe("Start date"),
-  end_date: z.string().optional().describe("End date"),
-}, async (params) => executeWithHooks("list_orders", params, config, () =>
-  client.request(`/orders?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+// 5. reply_to_comment — Responder a um comentario
+server.tool(
+  "reply_to_comment",
+  "Responde a um comentario em um video do TikTok.",
+  {
+    comment_id: z.string().describe("ID do comentario"),
+    text: z.string().describe("Texto da resposta"),
+  },
+  async ({ comment_id, text }) =>
+    executeWithHooks("reply_to_comment", { comment_id, text }, config, () =>
+      client.replyToComment(comment_id, text),
+    ),
+);
 
-server.tool("get_order", "Get order details.", {
-  id: z.string().describe("Order ID"),
-}, async ({ id }) => executeWithHooks("get_order", { id }, config, () => client.request(`/orders/${id}`)));
+// 6. get_video_analytics — Metricas de desempenho de um video
+server.tool(
+  "get_video_analytics",
+  "Retorna metricas de desempenho (views, likes, shares, comments) de um video.",
+  {
+    video_id: z.string().describe("ID do video"),
+  },
+  async ({ video_id }) =>
+    executeWithHooks("get_video_analytics", { video_id }, config, () =>
+      client.getVideoAnalytics(video_id),
+    ),
+);
 
-server.tool("update_order", "Update order.", {
-  id: z.string().describe("Order ID"),
-  data: z.record(z.string(), z.unknown()).describe("Update data"),
-}, async ({ id, data }) => executeWithHooks("update_order", { id, data }, config, () => client.request(`/orders/${id}`, "PUT", data)));
+// 7. get_followers_list — Lista de seguidores
+server.tool(
+  "get_followers_list",
+  "Retorna a lista de seguidores do criador autenticado.",
+  {
+    max_count: z.number().optional().default(100).describe("Quantidade maxima de seguidores"),
+  },
+  async ({ max_count }) =>
+    executeWithHooks("get_followers_list", { max_count }, config, () =>
+      client.getFollowersList(max_count),
+    ),
+);
 
-server.tool("list_customers", "List customers.", {
-  page: z.number().optional().default(1).describe("Page"),
-  query: z.string().optional().describe("Search"),
-}, async (params) => executeWithHooks("list_customers", params, config, () =>
-  client.request(`/customers?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+// 8. search_videos — Pesquisar videos
+server.tool(
+  "search_videos",
+  "Pesquisa videos no TikTok por palavra-chave.",
+  {
+    query: z.string().describe("Termo de busca"),
+  },
+  async ({ query }) =>
+    executeWithHooks("search_videos", { query }, config, () =>
+      client.searchVideos(query),
+    ),
+);
 
-server.tool("get_customer", "Get customer by ID.", {
-  id: z.string().describe("Customer ID"),
-}, async ({ id }) => executeWithHooks("get_customer", { id }, config, () => client.request(`/customers/${id}`)));
+// 9. get_hashtag_info — Informacoes de uma hashtag
+server.tool(
+  "get_hashtag_info",
+  "Retorna informacoes e metricas de uma hashtag especifica.",
+  {
+    hashtag: z.string().describe("Nome da hashtag (sem #)"),
+  },
+  async ({ hashtag }) =>
+    executeWithHooks("get_hashtag_info", { hashtag }, config, () =>
+      client.getHashtagInfo(hashtag),
+    ),
+);
 
-server.tool("get_analytics", "Get analytics data.", {
-  start_date: z.string().describe("Start date"),
-  end_date: z.string().describe("End date"),
-  metric: z.string().optional().describe("Metric name"),
-}, async (params) => executeWithHooks("get_analytics", params, config, () =>
-  client.request(`/analytics?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+// 10. get_trending_hashtags — Hashtags em alta
+server.tool(
+  "get_trending_hashtags",
+  "Retorna as hashtags que estao em tendencia no TikTok.",
+  {},
+  async () =>
+    executeWithHooks("get_trending_hashtags", {}, config, () =>
+      client.getTrendingHashtags(),
+    ),
+);
 
-server.tool("get_profile", "Get account profile.", {},
-  async () => executeWithHooks("get_profile", {}, config, () => client.request("/me")));
+// 11. get_creator_insights — Insights do criador (audiencia)
+server.tool(
+  "get_creator_insights",
+  "Retorna insights sobre a audiencia do criador (paises, generos, idades).",
+  {},
+  async () =>
+    executeWithHooks("get_creator_insights", {}, config, () =>
+      client.getCreatorInsights(),
+    ),
+);
 
-server.tool("search", "Search the platform.", {
-  query: z.string().describe("Search query"),
-  type: z.string().optional().describe("Result type"),
-  limit: z.number().optional().default(20).describe("Max results"),
-}, async (params) => executeWithHooks("search", params, config, () =>
-  client.request(`/search?${new URLSearchParams(Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`)
-));
+// 12. delete_video — Excluir video
+server.tool(
+  "delete_video",
+  "Exclui um video do perfil do criador autenticado.",
+  {
+    video_id: z.string().describe("ID do video a ser excluido"),
+  },
+  async ({ video_id }) =>
+    executeWithHooks("delete_video", { video_id }, config, () =>
+      client.deleteVideo(video_id),
+    ),
+);
 
-server.tool("get_categories", "List categories.", {},
-  async () => executeWithHooks("get_categories", {}, config, () => client.request("/categories")));
+// 13. get_liked_videos — Videos curtidos
+server.tool(
+  "get_liked_videos",
+  "Lista os videos curtidos pelo criador autenticado.",
+  {
+    max_count: z.number().optional().default(20).describe("Quantidade maxima"),
+  },
+  async ({ max_count }) =>
+    executeWithHooks("get_liked_videos", { max_count }, config, () =>
+      client.getLikedVideos(max_count),
+    ),
+);
 
-server.tool("send_message", "Send a message.", {
-  to: z.string().describe("Recipient ID"),
-  text: z.string().describe("Message text"),
-}, async ({ to, text }) => executeWithHooks("send_message", { to, text }, config, () => client.request("/messages", "POST", { to, text })));
+// 14. publish_video — Publicar video
+server.tool(
+  "publish_video",
+  "Inicia a publicacao de um video no TikTok via Content Posting API.",
+  {
+    data: z.record(z.string(), z.unknown()).describe("Dados de publicacao (post_info, source_info, etc.)"),
+  },
+  async ({ data }) =>
+    executeWithHooks("publish_video", { data }, config, () =>
+      client.publishVideo(data),
+    ),
+);
 
-server.tool("get_webhooks", "List webhooks.", {},
-  async () => executeWithHooks("get_webhooks", {}, config, () => client.request("/webhooks")));
+// ═══════════════════════════════════════════════════════════════════
+// RESOURCES (3)
+// ═══════════════════════════════════════════════════════════════════
 
-// ═══ RESOURCES ═══
-server.resource("items", "tiktok://items", async () => {
-  const result = await client.request("/items?limit=50");
-  return { contents: [{ uri: "tiktok://items", mimeType: "application/json", text: JSON.stringify(result.data, null, 2) }] };
-});
-server.resource("orders", "tiktok://orders", async () => {
-  const result = await client.request("/orders?limit=50");
-  return { contents: [{ uri: "tiktok://orders", mimeType: "application/json", text: JSON.stringify(result.data, null, 2) }] };
-});
-server.resource("profile", "tiktok://profile", async () => {
-  const result = await client.request("/me");
-  return { contents: [{ uri: "tiktok://profile", mimeType: "application/json", text: JSON.stringify(result.data, null, 2) }] };
-});
+server.resource(
+  "profile",
+  "tiktok://profile",
+  async () => {
+    const result = await client.getUserInfo();
+    return {
+      contents: [
+        {
+          uri: "tiktok://profile",
+          mimeType: "application/json",
+          text: JSON.stringify(result.data, null, 2),
+        },
+      ],
+    };
+  },
+);
 
-// ═══ PROMPTS ═══
-server.prompt("item-manager", "Guia para gerenciar itens/produtos", {
-  action: z.string().describe("Acao desejada"),
-}, ({ action }) => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: `Preciso ${action} na plataforma. Use as tools disponiveis.` } }] }));
+server.resource(
+  "videos",
+  "tiktok://videos",
+  async () => {
+    const result = await client.getUserVideos(20);
+    return {
+      contents: [
+        {
+          uri: "tiktok://videos",
+          mimeType: "application/json",
+          text: JSON.stringify(result.data, null, 2),
+        },
+      ],
+    };
+  },
+);
 
-server.prompt("order-handler", "Guia para gerenciar pedidos", {
-  status: z.string().optional().describe("Status"),
-}, ({ status }) => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: `Gerenciar pedidos${status ? ` com status ${status}` : ""}. Use list_orders e update_order.` } }] }));
+server.resource(
+  "analytics",
+  "tiktok://analytics",
+  async () => {
+    const result = await client.getCreatorInsights();
+    return {
+      contents: [
+        {
+          uri: "tiktok://analytics",
+          mimeType: "application/json",
+          text: JSON.stringify(result.data, null, 2),
+        },
+      ],
+    };
+  },
+);
 
-server.prompt("analytics-reporter", "Guia para relatorios", {
-  period: z.string().optional().describe("Periodo"),
-}, ({ period }) => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: `Gerar relatorio${period ? ` para ${period}` : ""}. Use get_analytics.` } }] }));
+// ═══════════════════════════════════════════════════════════════════
+// PROMPTS (3 — PT-BR)
+// ═══════════════════════════════════════════════════════════════════
 
-// ═══ START ═══
+server.prompt(
+  "planejador-conteudo",
+  "Planejador de conteudo TikTok — cria calendario editorial, sugere formatos e hashtags",
+  {
+    nicho: z.string().describe("Nicho ou tema do perfil"),
+    periodo: z.string().optional().describe("Periodo desejado (ex: proxima semana, proximo mes)"),
+  },
+  ({ nicho, periodo }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: [
+            `Sou um criador de conteudo TikTok no nicho "${nicho}".`,
+            periodo ? `Preciso de um plano para ${periodo}.` : "Preciso de um plano semanal.",
+            "",
+            "Por favor:",
+            "1. Use get_user_info para entender meu perfil atual",
+            "2. Use get_trending_hashtags para identificar tendencias relevantes",
+            "3. Use get_user_videos para analisar meus videos recentes",
+            "4. Crie um calendario editorial com:",
+            "   - Sugestoes de temas e formatos (duets, stitches, trends)",
+            "   - Melhores horarios para postar",
+            "   - Hashtags recomendadas por video",
+            "   - Estrategia de engajamento (CTAs, ganchos)",
+          ].join("\n"),
+        },
+      },
+    ],
+  }),
+);
+
+server.prompt(
+  "engajamento",
+  "Estrategia de engajamento — analisa comentarios e sugere respostas para aumentar interacao",
+  {
+    video_id: z.string().describe("ID do video para analisar engajamento"),
+  },
+  ({ video_id }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: [
+            `Preciso melhorar o engajamento no video ${video_id}.`,
+            "",
+            "Por favor:",
+            "1. Use get_video_info para obter os dados do video",
+            "2. Use get_video_comments para ler os comentarios",
+            "3. Use get_video_analytics para ver as metricas",
+            "4. Analise o sentimento dos comentarios",
+            "5. Sugira respostas estrategicas para os comentarios mais relevantes",
+            "6. Use reply_to_comment para responder os prioritarios",
+            "7. De sugestoes para aumentar o engajamento futuro",
+          ].join("\n"),
+        },
+      },
+    ],
+  }),
+);
+
+server.prompt(
+  "analise-tendencias",
+  "Analise de tendencias TikTok — identifica oportunidades de conteudo viral",
+  {
+    nicho: z.string().optional().describe("Nicho especifico para filtrar tendencias"),
+  },
+  ({ nicho }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: [
+            "Preciso de uma analise completa das tendencias atuais do TikTok.",
+            nicho ? `Foco no nicho: "${nicho}".` : "",
+            "",
+            "Por favor:",
+            "1. Use get_trending_hashtags para listar tendencias atuais",
+            nicho ? `2. Use search_videos para encontrar videos populares no nicho "${nicho}"` : "2. Use search_videos com termos relevantes",
+            "3. Use get_creator_insights para entender minha audiencia",
+            "4. Identifique padroes de conteudo viral (formatos, duracao, estilo)",
+            "5. Recomende 5-10 ideias de video baseadas nas tendencias",
+            "6. Sugira hashtags combinando trending + nicho para maximo alcance",
+          ].join("\n"),
+        },
+      },
+    ],
+  }),
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// START
+// ═══════════════════════════════════════════════════════════════════
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("BridgeAPI TikTok MCP Server v0.1.0 running on stdio");
 }
-main().catch((err) => { console.error("Fatal:", err); process.exit(1); });
+
+main().catch((err) => {
+  console.error("Fatal:", err);
+  process.exit(1);
+});

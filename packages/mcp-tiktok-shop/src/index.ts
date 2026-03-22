@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * @bridgeapi/mcp-tiktok-shop — MCP Server for TikTok Shop API
+ * @bridgeapi/mcp-tiktok-shop -- MCP Server for TikTok Shop API
  *
  * Connect any AI Agent to TikTok Shop via the Model Context Protocol.
  * Part of the BridgeAPI ecosystem: https://bridgeapi.com.br
  *
+ * 18 tools | 3 resources | 3 prompts (PT-BR)
  * Phase 1: passthrough with structured logging (hooks are no-ops)
  * Phase 2: Execution Engine plugs into pre/post hooks
  */
@@ -38,9 +39,6 @@ function loadConfig(): TikTokShopConfig {
 }
 
 // ─── TOOL WRAPPER WITH HOOKS ─────────────────────────────────
-// Every tool call goes through this wrapper.
-// Phase 1: hooks are no-ops that log.
-// Phase 2: hooks evaluate confidence and may block/escalate.
 
 async function executeWithHooks<T>(
   toolName: string,
@@ -55,7 +53,7 @@ async function executeWithHooks<T>(
     timestamp: new Date().toISOString(),
   };
 
-  // PRE-EXECUTE HOOK (Phase 1: always allows)
+  // PRE-EXECUTE HOOK
   const preResult = await preExecuteHook(hookCtx);
   if (!preResult.allow) {
     return {
@@ -76,7 +74,7 @@ async function executeWithHooks<T>(
   // EXECUTE
   const response = await executor();
 
-  // POST-EXECUTE HOOK (Phase 1: always accepts)
+  // POST-EXECUTE HOOK
   const postResult = await postExecuteHook(hookCtx, response);
 
   // FORMAT RESPONSE
@@ -86,7 +84,6 @@ async function executeWithHooks<T>(
     ...(response.error ? { error: response.error } : {}),
     meta: {
       ...response.meta,
-      // Phase 2 fields (null in Phase 1, ready for expansion)
       confidence_score: null,
       execution_mode: "auto",
       flags: postResult.flags || [],
@@ -117,11 +114,11 @@ const server = new McpServer(
   }
 );
 
-// ═══════════════════════════════════════════════════════════════
-// TOOLS
-// ═══════════════════════════════════════════════════════════════
+// =================================================================
+// TOOLS (18 TikTok Shop-specific tools)
+// =================================================================
 
-// ─── PRODUCT TOOLS ──────────────────────────────────────────
+// ─── 1. get_products ─────────────────────────────────────────
 
 server.tool(
   "get_products",
@@ -152,6 +149,8 @@ server.tool(
     )
 );
 
+// ─── 2. get_product ──────────────────────────────────────────
+
 server.tool(
   "get_product",
   "Get detailed information about a specific product by its ID. Returns title, description, images, pricing, variants, and inventory data.",
@@ -159,13 +158,12 @@ server.tool(
     product_id: z.string().describe("TikTok Shop product ID"),
   },
   async ({ product_id }) =>
-    executeWithHooks(
-      "get_product",
-      { product_id },
-      config,
-      () => tiktok.getProduct(product_id)
+    executeWithHooks("get_product", { product_id }, config, () =>
+      tiktok.getProduct(product_id)
     )
 );
+
+// ─── 3. create_product ───────────────────────────────────────
 
 server.tool(
   "create_product",
@@ -174,21 +172,20 @@ server.tool(
     product_data: z
       .record(z.string(), z.unknown())
       .describe(
-        "Product data object with fields: product_name (string), description (string), category_id (string), images (array of {id}), skus (array with price/stock), package_weight (object). See TikTok Shop API docs for full schema."
+        "Product data object: product_name (string), description (string), category_id (string), images (array of {id}), skus (array with price/stock), package_weight (object). See TikTok Shop API docs for full schema."
       ),
   },
   async ({ product_data }) =>
-    executeWithHooks(
-      "create_product",
-      { product_data },
-      config,
-      () => tiktok.createProduct(product_data)
+    executeWithHooks("create_product", { product_data }, config, () =>
+      tiktok.createProduct(product_data)
     )
 );
 
+// ─── 4. update_product ───────────────────────────────────────
+
 server.tool(
   "update_product",
-  "Update an existing product on TikTok Shop. Partial updates supported — only include fields you want to change.",
+  "Update an existing product on TikTok Shop. Partial updates supported -- only include fields you want to change.",
   {
     product_id: z.string().describe("TikTok Shop product ID to update"),
     product_data: z
@@ -205,6 +202,8 @@ server.tool(
       () => tiktok.updateProduct(product_id, product_data)
     )
 );
+
+// ─── 5. deactivate_product ───────────────────────────────────
 
 server.tool(
   "deactivate_product",
@@ -223,6 +222,8 @@ server.tool(
     )
 );
 
+// ─── 6. activate_product ─────────────────────────────────────
+
 server.tool(
   "activate_product",
   "Activate (show) one or more previously deactivated products on your TikTok Shop.",
@@ -240,7 +241,7 @@ server.tool(
     )
 );
 
-// ─── ORDER TOOLS ────────────────────────────────────────────
+// ─── 7. get_orders ───────────────────────────────────────────
 
 server.tool(
   "get_orders",
@@ -250,7 +251,7 @@ server.tool(
       .number()
       .optional()
       .describe(
-        "Order status filter: 100=Unpaid, 111=Awaiting shipment from buyer, 112=Awaiting collection by seller, 114=Partially shipped, 121=On-hold, 122=In transit, 130=Delivered, 140=Completed, 200=Cancelled"
+        "Order status filter: 100=Unpaid, 111=Awaiting shipment, 112=Awaiting collection, 114=Partially shipped, 121=On-hold, 122=In transit, 130=Delivered, 140=Completed, 200=Cancelled"
       ),
     page_size: z
       .number()
@@ -312,6 +313,8 @@ server.tool(
     )
 );
 
+// ─── 8. get_order ────────────────────────────────────────────
+
 server.tool(
   "get_order",
   "Get detailed information about one or more orders by their IDs. Returns full order data including items, buyer info, shipping address, and payment details.",
@@ -321,13 +324,12 @@ server.tool(
       .describe("Array of order IDs to retrieve (max 50)"),
   },
   async ({ order_ids }) =>
-    executeWithHooks(
-      "get_order",
-      { order_ids },
-      config,
-      () => tiktok.getOrder(order_ids)
+    executeWithHooks("get_order", { order_ids }, config, () =>
+      tiktok.getOrder(order_ids)
     )
 );
+
+// ─── 9. ship_order ───────────────────────────────────────────
 
 server.tool(
   "ship_order",
@@ -362,6 +364,8 @@ server.tool(
     )
 );
 
+// ─── 10. get_order_packages ──────────────────────────────────
+
 server.tool(
   "get_order_packages",
   "Get package/shipment details for an order. Returns tracking info, package status, and carrier details.",
@@ -371,15 +375,12 @@ server.tool(
       .describe("Order ID to get package information for"),
   },
   async ({ order_id }) =>
-    executeWithHooks(
-      "get_order_packages",
-      { order_id },
-      config,
-      () => tiktok.getOrderPackages(order_id)
+    executeWithHooks("get_order_packages", { order_id }, config, () =>
+      tiktok.getOrderPackages(order_id)
     )
 );
 
-// ─── CATEGORY TOOLS ─────────────────────────────────────────
+// ─── 11. get_categories ──────────────────────────────────────
 
 server.tool(
   "get_categories",
@@ -390,6 +391,8 @@ server.tool(
       tiktok.getCategories()
     )
 );
+
+// ─── 12. get_category_attributes ─────────────────────────────
 
 server.tool(
   "get_category_attributes",
@@ -408,7 +411,7 @@ server.tool(
     )
 );
 
-// ─── SHOP TOOLS ─────────────────────────────────────────────
+// ─── 13. get_shop_info ───────────────────────────────────────
 
 server.tool(
   "get_shop_info",
@@ -420,9 +423,11 @@ server.tool(
     )
 );
 
+// ─── 14. get_seller_performance ──────────────────────────────
+
 server.tool(
   "get_seller_performance",
-  "Get the seller's performance metrics on TikTok Shop. Returns metrics like order defect rate, late shipment rate, and cancellation rate.",
+  "Get the seller's performance metrics on TikTok Shop. Returns order defect rate, late shipment rate, and cancellation rate.",
   {},
   async () =>
     executeWithHooks("get_seller_performance", {}, config, () =>
@@ -430,7 +435,7 @@ server.tool(
     )
 );
 
-// ─── INVENTORY TOOLS ────────────────────────────────────────
+// ─── 15. get_warehouse ───────────────────────────────────────
 
 server.tool(
   "get_warehouse",
@@ -442,6 +447,8 @@ server.tool(
     )
 );
 
+// ─── 16. update_inventory ────────────────────────────────────
+
 server.tool(
   "update_inventory",
   "Update stock/inventory quantity for a specific SKU in a warehouse. Use this to sync inventory levels.",
@@ -449,9 +456,7 @@ server.tool(
     product_id: z
       .string()
       .describe("Product ID that contains the SKU"),
-    sku_id: z
-      .string()
-      .describe("SKU ID to update inventory for"),
+    sku_id: z.string().describe("SKU ID to update inventory for"),
     warehouse_id: z
       .string()
       .describe("Warehouse ID where inventory is stored"),
@@ -464,11 +469,17 @@ server.tool(
       "update_inventory",
       { product_id, sku_id, warehouse_id, quantity },
       config,
-      () => tiktok.updateInventory({ product_id, sku_id, warehouse_id, quantity })
+      () =>
+        tiktok.updateInventory({
+          product_id,
+          sku_id,
+          warehouse_id,
+          quantity,
+        })
     )
 );
 
-// ─── RETURN TOOLS ───────────────────────────────────────────
+// ─── 17. get_return_orders ───────────────────────────────────
 
 server.tool(
   "get_return_orders",
@@ -514,13 +525,13 @@ server.tool(
     )
 );
 
+// ─── 18. approve_return ──────────────────────────────────────
+
 server.tool(
   "approve_return",
   "Approve or reject a return/refund request from a buyer. Include a reason when rejecting.",
   {
-    return_id: z
-      .string()
-      .describe("Return/reverse order ID"),
+    return_id: z.string().describe("Return/reverse order ID"),
     decision: z
       .enum(["ACCEPT", "REJECT"])
       .describe("Decision: ACCEPT to approve the return, REJECT to deny it"),
@@ -538,9 +549,9 @@ server.tool(
     )
 );
 
-// ═══════════════════════════════════════════════════════════════
+// =================================================================
 // RESOURCES (read-only context for agents)
-// ═══════════════════════════════════════════════════════════════
+// =================================================================
 
 server.resource("products", "tiktokshop://products", async () => {
   const result = await tiktok.getProducts({ page_size: 100 });
@@ -549,7 +560,7 @@ server.resource("products", "tiktokshop://products", async () => {
       {
         uri: "tiktokshop://products",
         mimeType: "application/json",
-        text: JSON.stringify(result.data, null, 2),
+        text: JSON.stringify(result.data ?? null, null, 2),
       },
     ],
   };
@@ -562,7 +573,7 @@ server.resource("orders", "tiktokshop://orders", async () => {
       {
         uri: "tiktokshop://orders",
         mimeType: "application/json",
-        text: JSON.stringify(result.data, null, 2),
+        text: JSON.stringify(result.data ?? null, null, 2),
       },
     ],
   };
@@ -575,37 +586,37 @@ server.resource("shop", "tiktokshop://shop", async () => {
       {
         uri: "tiktokshop://shop",
         mimeType: "application/json",
-        text: JSON.stringify(result.data, null, 2),
+        text: JSON.stringify(result.data ?? null, null, 2),
       },
     ],
   };
 });
 
-// ═══════════════════════════════════════════════════════════════
-// PROMPTS (reusable templates for common tasks)
-// ═══════════════════════════════════════════════════════════════
+// =================================================================
+// PROMPTS (PT-BR reusable templates for common tasks)
+// =================================================================
 
 server.prompt(
-  "product-lister",
+  "listador-produtos",
   "Guia para listar e gerenciar produtos no TikTok Shop",
   {
-    action: z
+    acao: z
       .string()
       .describe(
         "Acao desejada: listar, buscar, criar, atualizar, ativar, desativar"
       ),
-    product_info: z
+    produto_info: z
       .string()
       .optional()
       .describe("Nome ou ID do produto (opcional)"),
   },
-  ({ action, product_info }) => ({
+  ({ acao, produto_info }) => ({
     messages: [
       {
         role: "user" as const,
         content: {
           type: "text" as const,
-          text: `Preciso gerenciar produtos no TikTok Shop. Acao: "${action}"${product_info ? `. Produto: ${product_info}` : ""}.
+          text: `Preciso gerenciar produtos no TikTok Shop. Acao: "${acao}"${produto_info ? `. Produto: ${produto_info}` : ""}.
 
 Passos:
 1. Para LISTAR: use get_products com filtro de status se necessario.
@@ -634,26 +645,26 @@ DICAS:
 );
 
 server.prompt(
-  "order-shipper",
+  "expedidor-pedidos",
   "Guia para processar e enviar pedidos do TikTok Shop",
   {
-    action: z
+    acao: z
       .string()
       .describe(
         "Acao desejada: listar_pendentes, ver_detalhes, enviar, rastrear"
       ),
-    order_info: z
+    pedido_info: z
       .string()
       .optional()
       .describe("ID do pedido ou informacao relevante"),
   },
-  ({ action, order_info }) => ({
+  ({ acao, pedido_info }) => ({
     messages: [
       {
         role: "user" as const,
         content: {
           type: "text" as const,
-          text: `Preciso processar pedidos no TikTok Shop. Acao: "${action}"${order_info ? `. Pedido: ${order_info}` : ""}.
+          text: `Preciso processar pedidos no TikTok Shop. Acao: "${acao}"${pedido_info ? `. Pedido: ${pedido_info}` : ""}.
 
 Passos:
 1. Para LISTAR PENDENTES: use get_orders com order_status=111 (aguardando envio).
@@ -681,26 +692,26 @@ DICAS:
 );
 
 server.prompt(
-  "inventory-manager",
+  "gerenciador-estoque",
   "Guia para gerenciar estoque e inventario no TikTok Shop",
   {
-    action: z
+    acao: z
       .string()
       .describe(
         "Acao desejada: verificar_estoque, atualizar_quantidade, listar_armazens"
       ),
-    product_info: z
+    produto_info: z
       .string()
       .optional()
       .describe("ID do produto ou SKU"),
   },
-  ({ action, product_info }) => ({
+  ({ acao, produto_info }) => ({
     messages: [
       {
         role: "user" as const,
         content: {
           type: "text" as const,
-          text: `Preciso gerenciar o estoque no TikTok Shop. Acao: "${action}"${product_info ? `. Produto/SKU: ${product_info}` : ""}.
+          text: `Preciso gerenciar o estoque no TikTok Shop. Acao: "${acao}"${produto_info ? `. Produto/SKU: ${produto_info}` : ""}.
 
 Passos:
 1. Para LISTAR ARMAZENS: use get_warehouse para ver todos os armazens configurados.
@@ -724,9 +735,9 @@ DICAS:
   })
 );
 
-// ═══════════════════════════════════════════════════════════════
+// =================================================================
 // START SERVER
-// ═══════════════════════════════════════════════════════════════
+// =================================================================
 
 async function main() {
   const transport = new StdioServerTransport();

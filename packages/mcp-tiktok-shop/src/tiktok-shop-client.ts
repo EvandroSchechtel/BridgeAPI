@@ -1,6 +1,6 @@
 /**
  * TikTok Shop API Client
- * Wrapper for TikTok Shop's REST API (Products, Orders, Shipping, Inventory, Returns)
+ * Wrapper for TikTok Shop Open API (Products, Orders, Fulfillment, Inventory, Returns)
  *
  * Auth: HMAC-SHA256 signature per request
  * Docs: https://partner.tiktokshop.com/docv2/page/6503775ad40fa302db1b8fe0
@@ -9,6 +9,8 @@
  */
 
 import { createHmac } from "node:crypto";
+
+// ─── CONFIG & RESPONSE TYPES ────────────────────────────────
 
 export interface TikTokShopConfig {
   appKey: string;
@@ -25,6 +27,7 @@ export interface ApiResponse<T = unknown> {
 }
 
 // ─── PRE/POST HOOK TYPES (Phase 2 ready) ─────────────────────
+
 export interface HookContext {
   tool_name: string;
   params: Record<string, unknown>;
@@ -43,22 +46,16 @@ export interface PostHookResult {
   flags?: string[];
 }
 
-// ─── PHASE 1 HOOKS: no-ops that log ──────────────────────────
-export async function preExecuteHook(ctx: HookContext): Promise<PreHookResult> {
-  // Phase 1: always allow. Log context for future dataset.
-  // Phase 2: this function will be replaced by Execution Engine
-  void ctx;
+// ─── PHASE 1 HOOKS: no-ops ──────────────────────────────────
+
+export async function preExecuteHook(_ctx: HookContext): Promise<PreHookResult> {
   return { allow: true };
 }
 
 export async function postExecuteHook(
-  ctx: HookContext,
-  response: ApiResponse
+  _ctx: HookContext,
+  _response: ApiResponse
 ): Promise<PostHookResult> {
-  // Phase 1: always accept. Log response for future dataset.
-  // Phase 2: this function will validate response against rules
-  void ctx;
-  void response;
   return { accept: true };
 }
 
@@ -75,7 +72,7 @@ export class TikTokShopClient {
   /**
    * Generate HMAC-SHA256 signature for TikTok Shop API requests.
    *
-   * Signature algorithm:
+   * Algorithm:
    * 1. Sort all query params (except sign, access_token) alphabetically by key
    * 2. Concatenate: app_secret + path + sorted_key_value_pairs + app_secret
    * 3. HMAC-SHA256 with app_secret as key
@@ -84,26 +81,25 @@ export class TikTokShopClient {
     path: string,
     params: Record<string, string>
   ): string {
-    // Remove sign and access_token from signing params
     const signingParams = { ...params };
     delete signingParams["sign"];
     delete signingParams["access_token"];
 
-    // Sort params alphabetically by key
     const sortedKeys = Object.keys(signingParams).sort();
     const paramString = sortedKeys
       .map((key) => `${key}${signingParams[key]}`)
       .join("");
 
-    // Build base string: app_secret + path + sorted_params + app_secret
     const baseString = `${this.config.appSecret}${path}${paramString}${this.config.appSecret}`;
 
-    // HMAC-SHA256
     return createHmac("sha256", this.config.appSecret)
       .update(baseString)
       .digest("hex");
   }
 
+  /**
+   * Execute an authenticated request to the TikTok Shop API.
+   */
   private async request<T = unknown>(
     path: string,
     method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
@@ -114,7 +110,6 @@ export class TikTokShopClient {
     const timestamp = Math.floor(Date.now() / 1000).toString();
 
     try {
-      // Build query params
       const params: Record<string, string> = {
         app_key: this.config.appKey,
         timestamp,
@@ -122,12 +117,10 @@ export class TikTokShopClient {
         ...extraParams,
       };
 
-      // Generate signature
       const sign = this.generateSignature(path, params);
       params["sign"] = sign;
       params["access_token"] = this.config.accessToken;
 
-      // Build URL
       const qs = new URLSearchParams(params).toString();
       const url = `${this.baseUrl}${path}?${qs}`;
 
@@ -152,7 +145,6 @@ export class TikTokShopClient {
         data = text ? { raw: text } : { status: "ok" };
       }
 
-      // TikTok Shop API returns code 0 for success
       const responseData = data as Record<string, unknown>;
       const apiCode = responseData?.code as number | undefined;
 
@@ -162,8 +154,7 @@ export class TikTokShopClient {
           error: {
             code: apiCode ?? res.status,
             message:
-              (responseData?.message as string) ??
-              `HTTP ${res.status}`,
+              (responseData?.message as string) ?? `HTTP ${res.status}`,
             details: data,
           },
           meta: { latency_ms, endpoint: path, method },
@@ -193,47 +184,47 @@ export class TikTokShopClient {
     page_size?: number;
     page_number?: number;
     search_status?: number;
-  }) {
-    const extra: Record<string, string> = {};
-    if (params?.page_size) extra["page_size"] = params.page_size.toString();
-    if (params?.page_number) extra["page_number"] = params.page_number.toString();
-    if (params?.search_status !== undefined)
-      extra["search_status"] = params.search_status.toString();
+  }): Promise<ApiResponse> {
     return this.request("/api/products/search", "POST", {
       page_size: params?.page_size ?? 20,
+      ...(params?.page_number !== undefined
+        ? { page_number: params.page_number }
+        : {}),
       ...(params?.search_status !== undefined
         ? { search_status: params.search_status }
         : {}),
     });
   }
 
-  async getProduct(productId: string) {
+  async getProduct(productId: string): Promise<ApiResponse> {
     return this.request("/api/products/details", "GET", undefined, {
       product_id: productId,
     });
   }
 
-  async createProduct(productData: Record<string, unknown>) {
+  async createProduct(
+    productData: Record<string, unknown>
+  ): Promise<ApiResponse> {
     return this.request("/api/products", "POST", productData);
   }
 
   async updateProduct(
     productId: string,
     productData: Record<string, unknown>
-  ) {
+  ): Promise<ApiResponse> {
     return this.request("/api/products", "PUT", {
       product_id: productId,
       ...productData,
     });
   }
 
-  async deactivateProduct(productIds: string[]) {
+  async deactivateProduct(productIds: string[]): Promise<ApiResponse> {
     return this.request("/api/products/deactivated_products", "POST", {
       product_ids: productIds,
     });
   }
 
-  async activateProduct(productIds: string[]) {
+  async activateProduct(productIds: string[]): Promise<ApiResponse> {
     return this.request("/api/products/activate", "POST", {
       product_ids: productIds,
     });
@@ -249,7 +240,7 @@ export class TikTokShopClient {
     create_time_to?: number;
     sort_by?: string;
     sort_type?: number;
-  }) {
+  }): Promise<ApiResponse> {
     return this.request("/api/orders/search", "POST", {
       page_size: params?.page_size ?? 20,
       ...(params?.order_status !== undefined
@@ -269,7 +260,7 @@ export class TikTokShopClient {
     });
   }
 
-  async getOrder(orderIds: string[]) {
+  async getOrder(orderIds: string[]): Promise<ApiResponse> {
     return this.request("/api/orders/detail/query", "POST", {
       order_id_list: orderIds,
     });
@@ -280,23 +271,30 @@ export class TikTokShopClient {
     pick_up_type?: number;
     shipping_provider_id?: string;
     tracking_number?: string;
-  }) {
-    return this.request("/api/fulfillment/ship_package", "POST", shipment);
+  }): Promise<ApiResponse> {
+    return this.request(
+      "/api/fulfillment/ship_package",
+      "POST",
+      shipment
+    );
   }
 
-  async getOrderPackages(orderId: string) {
-    return this.request("/api/fulfillment/order_packages", "GET", undefined, {
-      order_id: orderId,
-    });
+  async getOrderPackages(orderId: string): Promise<ApiResponse> {
+    return this.request(
+      "/api/fulfillment/order_packages",
+      "GET",
+      undefined,
+      { order_id: orderId }
+    );
   }
 
   // ─── CATEGORIES ────────────────────────────────────────
 
-  async getCategories() {
+  async getCategories(): Promise<ApiResponse> {
     return this.request("/api/products/categories");
   }
 
-  async getCategoryAttributes(categoryId: string) {
+  async getCategoryAttributes(categoryId: string): Promise<ApiResponse> {
     return this.request("/api/products/attributes", "GET", undefined, {
       category_id: categoryId,
     });
@@ -304,17 +302,17 @@ export class TikTokShopClient {
 
   // ─── SHOP ──────────────────────────────────────────────
 
-  async getShopInfo() {
+  async getShopInfo(): Promise<ApiResponse> {
     return this.request("/api/shop/get_authorized_shop");
   }
 
-  async getSellerPerformance() {
+  async getSellerPerformance(): Promise<ApiResponse> {
     return this.request("/api/shop/performance");
   }
 
   // ─── WAREHOUSE / INVENTORY ─────────────────────────────
 
-  async getWarehouse() {
+  async getWarehouse(): Promise<ApiResponse> {
     return this.request("/api/fulfillment/warehouse_list");
   }
 
@@ -323,7 +321,7 @@ export class TikTokShopClient {
     sku_id: string;
     warehouse_id: string;
     quantity: number;
-  }) {
+  }): Promise<ApiResponse> {
     return this.request("/api/products/stocks", "PUT", {
       product_id: inventory.product_id,
       skus: [
@@ -348,7 +346,7 @@ export class TikTokShopClient {
     status?: number;
     create_time_from?: number;
     create_time_to?: number;
-  }) {
+  }): Promise<ApiResponse> {
     return this.request("/api/reverse/reverse_order/list", "POST", {
       page_size: params?.page_size ?? 20,
       ...(params?.cursor ? { cursor: params.cursor } : {}),
@@ -362,7 +360,11 @@ export class TikTokShopClient {
     });
   }
 
-  async approveReturn(returnId: string, decision: "ACCEPT" | "REJECT", reason?: string) {
+  async approveReturn(
+    returnId: string,
+    decision: "ACCEPT" | "REJECT",
+    reason?: string
+  ): Promise<ApiResponse> {
     return this.request("/api/reverse/reverse_request/confirm", "POST", {
       reverse_order_id: returnId,
       decision,

@@ -1,4 +1,9 @@
+import { LiveFeed } from "@/components/layout/LiveFeed";
+
 export default function DashboardPage() {
-  // The layout handles everything — LiveFeed + AIChat
-  return null;
+  return (
+    <div className="-m-6">
+      <LiveFeed />
+    </div>
+  );
 }

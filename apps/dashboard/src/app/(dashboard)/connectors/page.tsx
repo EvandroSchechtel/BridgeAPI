@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   MessageCircle, Flame, Package, ShoppingCart, QrCode, FileText,
   Instagram, Store, ShoppingBag, LayoutGrid, Music, Clapperboard,
@@ -129,9 +130,10 @@ export default function ConnectorsPage() {
           const Icon = c.icon;
 
           return (
-            <div
+            <Link
+              href={`/connectors/${c.type}`}
               key={c.type}
-              className={`group relative bg-surface border rounded-xl p-5 transition-all duration-200 cursor-pointer ${
+              className={`group relative bg-surface border rounded-xl p-5 transition-all duration-200 cursor-pointer block ${
                 c.status === "active"
                   ? "border-green/20 hover:border-green/40 hover:shadow-lg hover:shadow-green/5"
                   : "border-border hover:border-text-muted/30 hover:shadow-lg hover:shadow-white/5"
@@ -187,11 +189,11 @@ export default function ConnectorsPage() {
 
               {/* Configure button (available only) */}
               {c.status === "available" && (
-                <button className="w-full mt-2 py-2 rounded-lg border border-border text-xs text-text-muted hover:text-text hover:border-green/30 hover:bg-green/5 transition-colors">
+                <span className="w-full mt-2 py-2 rounded-lg border border-border text-xs text-text-muted hover:text-text hover:border-green/30 hover:bg-green/5 transition-colors block text-center">
                   Configurar conector
-                </button>
+                </span>
               )}
-            </div>
+            </Link>
           );
         })}
       </div>
